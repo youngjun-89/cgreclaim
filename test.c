@@ -15,8 +15,6 @@
 #define TEST_CG_B	TEST_CG_BASE "/app_b"
 #define TEST_CG_C	TEST_CG_BASE "/app_c"
 
-#define POOL_SIZE	(1536ULL << 20)  /* 1.5 GB */
-
 static const char *level_str[] = { "ERR", "WARN", "INFO", "DEBUG" };
 
 static void test_log(int level, const char *fmt, ...)
@@ -68,7 +66,7 @@ static void print_status(struct cgr_ctx *ctx, const char *path)
 	struct cgr_status st;
 
 	if (cgr_get_status(ctx, path, &st) != CGR_OK) {
-		fprintf(stderr, "  %s: (error getting status)\n", path);
+		fprintf(stderr, "  %s: (not managed)\n", path);
 		return;
 	}
 
@@ -82,17 +80,21 @@ static void print_status(struct cgr_ctx *ctx, const char *path)
 
 int main(void)
 {
+	uint64_t total_ram = cgr_get_total_ram();
 	struct cgr_config cfg = {
-		.total_pool = POOL_SIZE,
+		.total_pool = 0,	/* auto-detect */
 		.poll_interval_ms = 500,
 		.fg_ratio = 0.6,
+		.scan_root = TEST_CG_BASE,
 		.log_fn = test_log,
 	};
 	struct cgr_ctx *ctx;
-	int ret;
+	int ret, found;
 
 	fprintf(stderr, "=== cgreclaim test ===\n");
-	fprintf(stderr, "Pool: %" PRIu64 " MB\n", (uint64_t)(POOL_SIZE >> 20));
+	fprintf(stderr, "System RAM: %" PRIu64 " MB\n", total_ram >> 20);
+	fprintf(stderr, "Reserve:    %" PRIu64 " MB\n",
+		(uint64_t)(CGR_SYSTEM_RESERVE >> 20));
 
 	/* Setup test cgroups (requires root) */
 	if (setup_test_cgroups() < 0) {
@@ -100,7 +102,7 @@ int main(void)
 		return 1;
 	}
 
-	/* Init */
+	/* Init — pool auto-calculated */
 	ctx = cgr_init(&cfg);
 	if (!ctx) {
 		fprintf(stderr, "cgr_init failed\n");
@@ -108,19 +110,14 @@ int main(void)
 		goto out;
 	}
 
-	/* Add cgroups with equal initial limits */
-	uint64_t each = POOL_SIZE / 3;
+	fprintf(stderr, "Pool:       %" PRIu64 " MB (auto)\n",
+		(uint64_t)((total_ram - CGR_SYSTEM_RESERVE) >> 20));
 
-	ret = cgr_add_cgroup(ctx, TEST_CG_A, each);
-	fprintf(stderr, "add A: %d\n", ret);
+	/* Auto-scan cgroups under TEST_CG_BASE */
+	found = cgr_scan_cgroups(ctx);
+	fprintf(stderr, "\nScan found %d cgroups\n", found);
 
-	ret = cgr_add_cgroup(ctx, TEST_CG_B, each);
-	fprintf(stderr, "add B: %d\n", ret);
-
-	ret = cgr_add_cgroup(ctx, TEST_CG_C, each);
-	fprintf(stderr, "add C: %d\n", ret);
-
-	fprintf(stderr, "\n--- initial state ---\n");
+	fprintf(stderr, "\n--- initial state (equal distribution) ---\n");
 	print_status(ctx, TEST_CG_A);
 	print_status(ctx, TEST_CG_B);
 	print_status(ctx, TEST_CG_C);
@@ -131,40 +128,29 @@ int main(void)
 
 	/* Simulate app switch: A becomes foreground */
 	fprintf(stderr, "\n--- set A foreground ---\n");
-	ret = cgr_set_foreground(ctx, TEST_CG_A);
-	fprintf(stderr, "set_foreground A: %d\n", ret);
-
+	cgr_set_foreground(ctx, TEST_CG_A);
 	print_status(ctx, TEST_CG_A);
 	print_status(ctx, TEST_CG_B);
 	print_status(ctx, TEST_CG_C);
 
-	/* Wait a bit, then switch to B */
 	sleep(2);
 
+	/* Switch to B */
 	fprintf(stderr, "\n--- set B foreground ---\n");
-	ret = cgr_set_foreground(ctx, TEST_CG_B);
-	fprintf(stderr, "set_foreground B: %d\n", ret);
-
+	cgr_set_foreground(ctx, TEST_CG_B);
 	print_status(ctx, TEST_CG_A);
 	print_status(ctx, TEST_CG_B);
 	print_status(ctx, TEST_CG_C);
 
-	/* Dynamic limit test */
-	fprintf(stderr, "\n--- set_limit C = 128MB ---\n");
-	ret = cgr_set_limit(ctx, TEST_CG_C, 128ULL << 20);
-	fprintf(stderr, "set_limit C: %d\n", ret);
-	print_status(ctx, TEST_CG_C);
-
-	/* Stop */
 	sleep(1);
+
+	/* Stop & cleanup */
 	cgr_stop(ctx);
 	fprintf(stderr, "\nmonitor stopped\n");
 
-	/* Remove cgroups */
 	cgr_remove_cgroup(ctx, TEST_CG_A);
 	cgr_remove_cgroup(ctx, TEST_CG_B);
 	cgr_remove_cgroup(ctx, TEST_CG_C);
-
 	cgr_destroy(ctx);
 	ret = 0;
 

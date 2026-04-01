@@ -7,6 +7,9 @@
 /* Minimum memory limit for any cgroup (32MB) */
 #define CGR_MIN_LIMIT_BYTES	(32ULL << 20)
 
+/* Reserved memory for kernel/system (384MB) */
+#define CGR_SYSTEM_RESERVE	(384ULL << 20)
+
 /* Maximum number of managed cgroups */
 #define CGR_MAX_GROUPS		16
 
@@ -41,9 +44,21 @@ struct cgr_status {
 
 /* Library configuration */
 struct cgr_config {
-	uint64_t	total_pool;		/* total memory pool in bytes */
+	/*
+	 * Total memory pool for cgroups. If 0, auto-detect from
+	 * system total RAM minus CGR_SYSTEM_RESERVE.
+	 */
+	uint64_t	total_pool;
+
 	unsigned int	poll_interval_ms;	/* monitor polling interval (default: 1000) */
 	double		fg_ratio;		/* fraction of pool for foreground (default: 0.6) */
+
+	/*
+	 * Root cgroup path to scan for child cgroups.
+	 * If set, cgr_scan_cgroups() discovers children automatically.
+	 * e.g., "/sys/fs/cgroup" or "/sys/fs/cgroup/user.slice"
+	 */
+	const char	*scan_root;
 
 	/* Optional log callback. If NULL, no logging. */
 	void (*log_fn)(int level, const char *fmt, ...);
@@ -59,10 +74,17 @@ struct cgr_ctx *cgr_init(const struct cgr_config *cfg);
 void            cgr_destroy(struct cgr_ctx *ctx);
 
 /*
- * Cgroup management
+ * Cgroup management — manual
  */
 int cgr_add_cgroup(struct cgr_ctx *ctx, const char *path, uint64_t initial_limit);
 int cgr_remove_cgroup(struct cgr_ctx *ctx, const char *path);
+
+/*
+ * Cgroup auto-discovery — scan cfg->scan_root for child cgroups
+ * that have the memory controller enabled, register them, and
+ * distribute pool equally. Returns number of cgroups found or < 0.
+ */
+int cgr_scan_cgroups(struct cgr_ctx *ctx);
 
 /*
  * Monitor thread control
@@ -80,5 +102,10 @@ int cgr_set_foreground(struct cgr_ctx *ctx, const char *path);
  */
 int cgr_set_limit(struct cgr_ctx *ctx, const char *path, uint64_t new_limit);
 int cgr_get_status(struct cgr_ctx *ctx, const char *path, struct cgr_status *out);
+
+/*
+ * Utility — get system total RAM in bytes
+ */
+uint64_t cgr_get_total_ram(void);
 
 #endif /* CGRECLAIM_H */

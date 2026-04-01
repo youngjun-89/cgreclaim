@@ -18,6 +18,7 @@ struct cgr_group {
 /* Library context */
 struct cgr_ctx {
 	struct cgr_config	cfg;
+	char			scan_root[256]; /* owned copy */
 	struct cgr_group	groups[CGR_MAX_GROUPS];
 	int			nr_groups;
 
