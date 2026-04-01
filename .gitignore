@@ -1,3 +1,8 @@
 *.o
 *.a
 test_cgreclaim
+build/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile.cmake
