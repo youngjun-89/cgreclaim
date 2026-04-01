@@ -27,5 +27,5 @@ clean:
 
 # Dependencies
 cgroup.o: cgroup.c cgroup.h
-cgreclaim.o: cgreclaim.c cgreclaim.h cgroup.h
-monitor.o: monitor.c cgreclaim.h cgroup.h
+cgreclaim.o: cgreclaim.c cgreclaim_internal.h cgreclaim.h cgroup.h
+monitor.o: monitor.c cgreclaim_internal.h cgreclaim.h cgroup.h
