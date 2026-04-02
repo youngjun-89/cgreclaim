@@ -9,10 +9,10 @@
 #include <unistd.h>
 
 /*
- * Idle detection threshold: if usage change between two polls
- * is less than this fraction of the limit, consider the cgroup idle.
+ * Refault sampling interval: check memory.stat every N polls
+ * to avoid per-poll overhead of parsing memory.stat.
  */
-#define IDLE_THRESHOLD_RATIO	0.02
+#define REFAULT_SAMPLE_INTERVAL	5
 
 /*
  * When using memory.high fallback, wait this long for the kernel
@@ -149,24 +149,54 @@ void cgr_rebalance(struct cgr_ctx *ctx)
 
 /* ---------- monitor thread ---------- */
 
+/*
+ * Idle detection based on workingset refault counters.
+ * A cgroup is idle if no refaults occurred between two samples,
+ * meaning its working set fits within its allocation and nothing
+ * evicted is being re-accessed.
+ */
 static int is_idle(struct cgr_group *g)
 {
-	uint64_t delta;
+	return g->refault == g->prev_refault;
+}
 
-	if (g->usage > g->prev_usage)
-		delta = g->usage - g->prev_usage;
-	else
-		delta = g->prev_usage - g->usage;
+/*
+ * Sample refault counters from memory.stat for all active cgroups.
+ * Called every REFAULT_SAMPLE_INTERVAL polls to limit overhead.
+ */
+static void sample_refault(struct cgr_ctx *ctx)
+{
+	int i;
 
-	return delta < (uint64_t)(g->limit * IDLE_THRESHOLD_RATIO);
+	for (i = 0; i < CGR_MAX_GROUPS; i++) {
+		struct cgr_group *g = &ctx->groups[i];
+		uint64_t rf;
+
+		if (!g->active)
+			continue;
+
+		g->prev_refault = g->refault;
+
+		if (cg_read_refault(g->path, &rf) == 0)
+			g->refault = rf;
+	}
 }
 
 static void poll_usage(struct cgr_ctx *ctx)
 {
 	int i;
 	int need_rebalance = 0;
+	int do_refault_sample;
 
 	pthread_rwlock_wrlock(&ctx->lock);
+
+	ctx->poll_count++;
+	do_refault_sample = (ctx->poll_count >= REFAULT_SAMPLE_INTERVAL);
+
+	if (do_refault_sample) {
+		ctx->poll_count = 0;
+		sample_refault(ctx);
+	}
 
 	for (i = 0; i < CGR_MAX_GROUPS; i++) {
 		struct cgr_group *g = &ctx->groups[i];
@@ -175,17 +205,16 @@ static void poll_usage(struct cgr_ctx *ctx)
 		if (!g->active)
 			continue;
 
-		g->prev_usage = g->usage;
-
 		if (cg_read_uint64(g->path, "memory.current", &current) == 0)
 			g->usage = current;
 
 		/*
-		 * Auto-detect idle/active transitions.
-		 * If a non-foreground cgroup becomes active (not idle),
-		 * it may need more memory — trigger rebalance.
-		 * If a foreground cgroup becomes idle, it can give up memory.
+		 * Only evaluate idle/active transitions on refault
+		 * sample boundaries, when we have fresh data.
 		 */
+		if (!do_refault_sample)
+			continue;
+
 		if (!g->is_foreground && !is_idle(g))
 			need_rebalance = 1;
 		else if (g->is_foreground && is_idle(g))

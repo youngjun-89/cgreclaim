@@ -142,7 +142,8 @@ int cgr_add_cgroup(struct cgr_ctx *ctx, const char *path)
 	snprintf(g->path, sizeof(g->path), "%s", path);
 	g->limit = current_max;
 	g->usage = 0;
-	g->prev_usage = 0;
+	g->refault = 0;
+	g->prev_refault = 0;
 	g->is_foreground = 0;
 	g->reclaim_count = 0;
 	g->active = 1;
