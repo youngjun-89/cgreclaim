@@ -8,7 +8,7 @@
  * Writes timestamped entries to /home/root/cgreclaim.log.
  *
  * Usage:
- *   cgr_log_open();                    // call once at startup
+ *   cgr_log_open();                    // optional eager open
  *   cfg.log_fn = cgr_log_file;         // pass as log callback
  *   ...
  *   cgr_log_close();                   // call at shutdown
@@ -16,7 +16,10 @@
 
 #define CGR_LOG_PATH	"/home/root/cgreclaim.log"
 
-/* Open the log file (append mode). Returns 0 on success, -1 on error. */
+/*
+ * Open the log file (append mode). Returns 0 on success, -1 on error.
+ * Optional: cgr_log_file() will also try to open lazily on first write.
+ */
 int cgr_log_open(void);
 
 /* Close the log file. */

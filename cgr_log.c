@@ -11,26 +11,30 @@ static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static const char *level_str[] = { "ERR", "WARN", "INFO", "DEBUG" };
 
-int cgr_log_open(void)
+static int cgr_log_open_locked(void)
 {
-	pthread_mutex_lock(&log_mutex);
-
-	if (log_fp) {
-		pthread_mutex_unlock(&log_mutex);
+	if (log_fp)
 		return 0;
-	}
 
 	log_fp = fopen(CGR_LOG_PATH, "a");
-	if (!log_fp) {
-		pthread_mutex_unlock(&log_mutex);
+	if (!log_fp)
 		return -1;
-	}
 
 	/* Line-buffered so entries appear promptly */
 	setvbuf(log_fp, NULL, _IOLBF, 0);
 
-	pthread_mutex_unlock(&log_mutex);
 	return 0;
+}
+
+int cgr_log_open(void)
+{
+	int ret;
+
+	pthread_mutex_lock(&log_mutex);
+	ret = cgr_log_open_locked();
+
+	pthread_mutex_unlock(&log_mutex);
+	return ret;
 }
 
 void cgr_log_close(void)
@@ -53,7 +57,7 @@ void cgr_log_file(int level, const char *fmt, ...)
 
 	pthread_mutex_lock(&log_mutex);
 
-	if (!log_fp) {
+	if (cgr_log_open_locked() < 0) {
 		pthread_mutex_unlock(&log_mutex);
 		return;
 	}
