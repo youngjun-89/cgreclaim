@@ -32,6 +32,13 @@ struct cgr_ctx {
 	void (*log_fn)(int level, const char *fmt, ...);
 };
 
+/* Internal logging macro — safe to call even when log_fn is NULL */
+#define cgr_log(ctx, lvl, fmt, ...) \
+	do { \
+		if ((ctx)->log_fn) \
+			(ctx)->log_fn((lvl), (fmt), ##__VA_ARGS__); \
+	} while (0)
+
 /* Internal helpers shared between cgreclaim.c and monitor.c */
 struct cgr_group *cgr_find_group(struct cgr_ctx *ctx, const char *path);
 int cgr_do_reclaim(struct cgr_ctx *ctx, struct cgr_group *g, uint64_t target);

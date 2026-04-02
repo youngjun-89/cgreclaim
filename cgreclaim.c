@@ -80,6 +80,11 @@ struct cgr_ctx *cgr_init(const struct cgr_config *cfg)
 	ctx->reclaim_supported = cg_file_exists("/sys/fs/cgroup",
 						"memory.reclaim");
 
+	cgr_log(ctx, CGR_LOG_INFO, "cgr_init: poll=%ums scan_root=%s reclaim_supported=%d",
+		ctx->cfg.poll_interval_ms,
+		ctx->scan_root[0] ? ctx->scan_root : "(none)",
+		ctx->reclaim_supported);
+
 	return ctx;
 }
 
@@ -132,6 +137,9 @@ int cgr_add_cgroup(struct cgr_ctx *ctx, const char *path)
 	g->active = 1;
 	ctx->nr_groups++;
 
+	cgr_log(ctx, CGR_LOG_INFO, "add_cgroup: %s limit=%lu nr_groups=%d",
+		path, (unsigned long)(current_max >> 20), ctx->nr_groups);
+
 	pthread_rwlock_unlock(&ctx->lock);
 
 	return CGR_OK;
@@ -154,6 +162,9 @@ int cgr_remove_cgroup(struct cgr_ctx *ctx, const char *path)
 
 	/* Reset memory.max to unlimited before removing */
 	cg_write_uint64(path, "memory.max", UINT64_MAX);
+
+	cgr_log(ctx, CGR_LOG_INFO, "remove_cgroup: %s nr_groups=%d",
+		path, ctx->nr_groups - 1);
 
 	memset(g, 0, sizeof(*g));
 	ctx->nr_groups--;
@@ -211,6 +222,9 @@ int cgr_scan_cgroups(struct cgr_ctx *ctx)
 	}
 
 	closedir(dir);
+
+	cgr_log(ctx, CGR_LOG_INFO, "scan_cgroups: found %d under %s",
+		found, ctx->scan_root);
 
 	return found;
 }

@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "cgreclaim.h"
+#include "cgr_log.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -84,13 +85,19 @@ int main(void)
 	struct cgr_config cfg = {
 		.poll_interval_ms = 500,
 		.scan_root = TEST_CG_BASE,
-		.log_fn = test_log,
+		.log_fn = cgr_log_file,
 	};
 	struct cgr_ctx *ctx;
 	int ret, found;
 
 	fprintf(stderr, "=== cgreclaim test ===\n");
 	fprintf(stderr, "System RAM: %" PRIu64 " MB\n", total_ram >> 20);
+
+	/* Open file logger — writes to /home/root/cgreclaim.log */
+	if (cgr_log_open() < 0) {
+		fprintf(stderr, "WARNING: could not open %s, continuing without file log\n",
+			CGR_LOG_PATH);
+	}
 
 	/* Setup test cgroups (requires root) */
 	if (setup_test_cgroups() < 0) {
@@ -149,6 +156,7 @@ int main(void)
 
 out:
 	cleanup_test_cgroups();
+	cgr_log_close();
 	fprintf(stderr, "\n=== done (ret=%d) ===\n", ret);
 	return ret;
 }

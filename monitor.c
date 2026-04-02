@@ -36,6 +36,13 @@ int cgr_do_reclaim(struct cgr_ctx *ctx, struct cgr_group *g, uint64_t target)
 
 	to_reclaim = g->usage - target;
 
+	cgr_log(ctx, CGR_LOG_INFO, "reclaim: %s usage=%luMB target=%luMB reclaim=%luMB method=%s",
+		g->path,
+		(unsigned long)(g->usage >> 20),
+		(unsigned long)(target >> 20),
+		(unsigned long)(to_reclaim >> 20),
+		ctx->reclaim_supported ? "memory.reclaim" : "memory.high");
+
 	if (ctx->reclaim_supported) {
 		ret = cg_write_reclaim(g->path, to_reclaim);
 	} else {
@@ -55,8 +62,14 @@ int cgr_do_reclaim(struct cgr_ctx *ctx, struct cgr_group *g, uint64_t target)
 		}
 	}
 
-	if (ret == 0)
+	if (ret == 0) {
 		g->reclaim_count++;
+		cgr_log(ctx, CGR_LOG_DEBUG, "reclaim: %s success (total=%lu)",
+			g->path, (unsigned long)g->reclaim_count);
+	} else {
+		cgr_log(ctx, CGR_LOG_ERR, "reclaim: %s FAILED",
+			g->path);
+	}
 
 	return ret;
 }
@@ -150,6 +163,16 @@ void cgr_adjust_limits(struct cgr_ctx *ctx)
 		if (new_limit == g->limit)
 			continue;
 
+		cgr_log(ctx, CGR_LOG_INFO,
+			"adjust: %s %s %luMB -> %luMB (usage=%luMB refault=%lu prev_refault=%lu)",
+			g->path,
+			!is_idle(g) ? "GROW" : "SHRINK",
+			(unsigned long)(g->limit >> 20),
+			(unsigned long)(new_limit >> 20),
+			(unsigned long)(g->usage >> 20),
+			(unsigned long)g->refault,
+			(unsigned long)g->prev_refault);
+
 		g->limit = new_limit;
 
 		if (g->usage > new_limit)
@@ -188,8 +211,11 @@ static void poll_usage(struct cgr_ctx *ctx)
 	}
 
 	/* Adjust limits only on refault sample boundaries */
-	if (do_refault_sample)
+	if (do_refault_sample) {
+		cgr_log(ctx, CGR_LOG_DEBUG, "poll: refault sample #%u, adjusting limits",
+			ctx->poll_count);
 		cgr_adjust_limits(ctx);
+	}
 
 	pthread_rwlock_unlock(&ctx->lock);
 }
@@ -229,8 +255,12 @@ int cgr_start(struct cgr_ctx *ctx)
 	ret = pthread_create(&ctx->monitor_tid, NULL, monitor_thread, ctx);
 	if (ret != 0) {
 		ctx->running = 0;
+		cgr_log(ctx, CGR_LOG_ERR, "monitor: failed to create thread");
 		return CGR_ERR_IO;
 	}
+
+	cgr_log(ctx, CGR_LOG_INFO, "monitor: started (poll_interval=%ums)",
+		ctx->cfg.poll_interval_ms);
 
 	return CGR_OK;
 }
@@ -245,6 +275,8 @@ int cgr_stop(struct cgr_ctx *ctx)
 
 	ctx->running = 0;
 	pthread_join(ctx->monitor_tid, NULL);
+
+	cgr_log(ctx, CGR_LOG_INFO, "monitor: stopped");
 
 	return CGR_OK;
 }
@@ -272,6 +304,8 @@ int cgr_set_foreground(struct cgr_ctx *ctx, const char *path)
 	}
 	g->is_foreground = 1;
 
+	cgr_log(ctx, CGR_LOG_INFO, "set_foreground: %s", path);
+
 	pthread_rwlock_unlock(&ctx->lock);
 
 	return CGR_OK;
@@ -295,6 +329,10 @@ int cgr_set_limit(struct cgr_ctx *ctx, const char *path, uint64_t new_limit)
 		pthread_rwlock_unlock(&ctx->lock);
 		return CGR_ERR_NOENT;
 	}
+
+	cgr_log(ctx, CGR_LOG_INFO, "set_limit: %s %luMB -> %luMB",
+		path, (unsigned long)(g->limit >> 20),
+		(unsigned long)(new_limit >> 20));
 
 	g->limit = new_limit;
 
