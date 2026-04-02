@@ -114,16 +114,13 @@ void cgr_destroy(struct cgr_ctx *ctx)
 
 /* ---------- cgroup management ---------- */
 
-int cgr_add_cgroup(struct cgr_ctx *ctx, const char *path, uint64_t initial_limit)
+int cgr_add_cgroup(struct cgr_ctx *ctx, const char *path)
 {
 	struct cgr_group *g;
-	int ret;
+	uint64_t current_max;
 
 	if (!ctx || !path)
 		return CGR_ERR_INVAL;
-
-	if (initial_limit < CGR_MIN_LIMIT_BYTES)
-		initial_limit = CGR_MIN_LIMIT_BYTES;
 
 	pthread_rwlock_wrlock(&ctx->lock);
 
@@ -138,8 +135,12 @@ int cgr_add_cgroup(struct cgr_ctx *ctx, const char *path, uint64_t initial_limit
 		return CGR_ERR_FULL;
 	}
 
+	/* Read current memory.max — keep it as-is */
+	if (cg_read_uint64(path, "memory.max", &current_max) < 0)
+		current_max = UINT64_MAX;
+
 	snprintf(g->path, sizeof(g->path), "%s", path);
-	g->limit = initial_limit;
+	g->limit = current_max;
 	g->usage = 0;
 	g->prev_usage = 0;
 	g->is_foreground = 0;
@@ -148,11 +149,6 @@ int cgr_add_cgroup(struct cgr_ctx *ctx, const char *path, uint64_t initial_limit
 	ctx->nr_groups++;
 
 	pthread_rwlock_unlock(&ctx->lock);
-
-	/* Apply memory.max immediately */
-	ret = cg_write_uint64(path, "memory.max", initial_limit);
-	if (ret < 0)
-		return CGR_ERR_IO;
 
 	return CGR_OK;
 }
@@ -201,7 +197,6 @@ int cgr_scan_cgroups(struct cgr_ctx *ctx)
 	char child_path[512];
 	struct stat st;
 	int found = 0;
-	uint64_t each;
 
 	if (!ctx || !ctx->scan_root[0])
 		return CGR_ERR_INVAL;
@@ -210,7 +205,7 @@ int cgr_scan_cgroups(struct cgr_ctx *ctx)
 	if (!dir)
 		return CGR_ERR_IO;
 
-	/* First pass: discover child cgroups */
+	/* Discover and index child cgroups, preserving their current limits */
 	while ((de = readdir(dir)) != NULL) {
 		if (de->d_name[0] == '.')
 			continue;
@@ -224,62 +219,14 @@ int cgr_scan_cgroups(struct cgr_ctx *ctx)
 		if (!is_memory_cgroup(child_path))
 			continue;
 
-		/* Skip if already registered */
-		pthread_rwlock_rdlock(&ctx->lock);
-		int exists = cgr_find_group(ctx, child_path) != NULL;
-		pthread_rwlock_unlock(&ctx->lock);
-
-		if (exists)
-			continue;
-
-		if (found + ctx->nr_groups >= CGR_MAX_GROUPS)
-			break;
-
-		found++;
-	}
-
-	closedir(dir);
-
-	if (found == 0)
-		return 0;
-
-	/* Calculate equal share for all groups (existing + new) */
-	int total_groups = ctx->nr_groups + found;
-	each = ctx->cfg.total_pool / total_groups;
-	if (each < CGR_MIN_LIMIT_BYTES)
-		each = CGR_MIN_LIMIT_BYTES;
-
-	/* Second pass: register them */
-	dir = opendir(ctx->scan_root);
-	if (!dir)
-		return CGR_ERR_IO;
-
-	found = 0;
-	while ((de = readdir(dir)) != NULL) {
-		if (de->d_name[0] == '.')
-			continue;
-
-		snprintf(child_path, sizeof(child_path), "%s/%s",
-			 ctx->scan_root, de->d_name);
-
-		if (stat(child_path, &st) < 0 || !S_ISDIR(st.st_mode))
-			continue;
-
-		if (!is_memory_cgroup(child_path))
-			continue;
-
-		if (cgr_add_cgroup(ctx, child_path, each) == CGR_OK)
+		if (cgr_add_cgroup(ctx, child_path) == CGR_OK)
 			found++;
+
+		if (ctx->nr_groups >= CGR_MAX_GROUPS)
+			break;
 	}
 
 	closedir(dir);
-
-	/* Rebalance existing groups to the new equal share */
-	if (found > 0) {
-		pthread_rwlock_wrlock(&ctx->lock);
-		cgr_rebalance(ctx);
-		pthread_rwlock_unlock(&ctx->lock);
-	}
 
 	return found;
 }

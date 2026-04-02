@@ -76,13 +76,13 @@ void            cgr_destroy(struct cgr_ctx *ctx);
 /*
  * Cgroup management — manual
  */
-int cgr_add_cgroup(struct cgr_ctx *ctx, const char *path, uint64_t initial_limit);
+int cgr_add_cgroup(struct cgr_ctx *ctx, const char *path);
 int cgr_remove_cgroup(struct cgr_ctx *ctx, const char *path);
 
 /*
  * Cgroup auto-discovery — scan cfg->scan_root for child cgroups
- * that have the memory controller enabled, register them, and
- * distribute pool equally. Returns number of cgroups found or < 0.
+ * that have the memory controller enabled and index them.
+ * Existing memory.max limits are preserved. Returns number found or < 0.
  */
 int cgr_scan_cgroups(struct cgr_ctx *ctx);
 
