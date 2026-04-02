@@ -28,4 +28,11 @@ int cg_write_reclaim(const char *cg_path, uint64_t bytes);
 /* Check if a cgroup knob file exists */
 int cg_file_exists(const char *cg_path, const char *key);
 
+/*
+ * Read refault counters from memory.stat.
+ * Returns sum of workingset_refault_anon + workingset_refault_file.
+ * Returns 0 on success, -1 on error.
+ */
+int cg_read_refault(const char *cg_path, uint64_t *refault);
+
 #endif /* CGROUP_H */

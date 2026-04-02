@@ -108,3 +108,41 @@ int cg_file_exists(const char *cg_path, const char *key)
 
 	return stat(path, &st) == 0;
 }
+
+int cg_read_refault(const char *cg_path, uint64_t *refault)
+{
+	char path[PATH_MAX];
+	char buf[4096];
+	int fd;
+	ssize_t n;
+	uint64_t anon = 0, file = 0;
+	char *line, *saveptr;
+
+	if (build_path(path, sizeof(path), cg_path, "memory.stat") < 0)
+		return -1;
+
+	fd = open(path, O_RDONLY);
+	if (fd < 0)
+		return -1;
+
+	n = read(fd, buf, sizeof(buf) - 1);
+	close(fd);
+
+	if (n <= 0) {
+		errno = EIO;
+		return -1;
+	}
+
+	buf[n] = '\0';
+
+	for (line = strtok_r(buf, "\n", &saveptr); line;
+	     line = strtok_r(NULL, "\n", &saveptr)) {
+		if (strncmp(line, "workingset_refault_anon ", 23) == 0)
+			anon = strtoull(line + 23, NULL, 10);
+		else if (strncmp(line, "workingset_refault_file ", 23) == 0)
+			file = strtoull(line + 23, NULL, 10);
+	}
+
+	*refault = anon + file;
+	return 0;
+}
