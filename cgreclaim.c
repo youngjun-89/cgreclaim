@@ -47,16 +47,6 @@ uint64_t cgr_get_total_ram(void)
 	return (uint64_t)si.totalram * si.mem_unit;
 }
 
-static uint64_t auto_pool_size(void)
-{
-	uint64_t total = cgr_get_total_ram();
-
-	if (total <= CGR_SYSTEM_RESERVE)
-		return CGR_MIN_LIMIT_BYTES;
-
-	return total - CGR_SYSTEM_RESERVE;
-}
-
 /* ---------- lifecycle ---------- */
 
 struct cgr_ctx *cgr_init(const struct cgr_config *cfg)
@@ -72,15 +62,8 @@ struct cgr_ctx *cgr_init(const struct cgr_config *cfg)
 
 	ctx->cfg = *cfg;
 
-	/* Auto-detect pool size if not specified */
-	if (ctx->cfg.total_pool == 0)
-		ctx->cfg.total_pool = auto_pool_size();
-
-	/* defaults */
 	if (ctx->cfg.poll_interval_ms == 0)
 		ctx->cfg.poll_interval_ms = 1000;
-	if (ctx->cfg.fg_ratio <= 0.0 || ctx->cfg.fg_ratio >= 1.0)
-		ctx->cfg.fg_ratio = 0.6;
 
 	if (cfg->scan_root)
 		snprintf(ctx->scan_root, sizeof(ctx->scan_root),

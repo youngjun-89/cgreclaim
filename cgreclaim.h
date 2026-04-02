@@ -7,9 +7,6 @@
 /* Minimum memory limit for any cgroup (32MB) */
 #define CGR_MIN_LIMIT_BYTES	(32ULL << 20)
 
-/* Reserved memory for kernel/system (384MB) */
-#define CGR_SYSTEM_RESERVE	(384ULL << 20)
-
 /* Maximum number of managed cgroups */
 #define CGR_MAX_GROUPS		16
 
@@ -44,14 +41,7 @@ struct cgr_status {
 
 /* Library configuration */
 struct cgr_config {
-	/*
-	 * Total memory pool for cgroups. If 0, auto-detect from
-	 * system total RAM minus CGR_SYSTEM_RESERVE.
-	 */
-	uint64_t	total_pool;
-
 	unsigned int	poll_interval_ms;	/* monitor polling interval (default: 1000) */
-	double		fg_ratio;		/* fraction of pool for foreground (default: 0.6) */
 
 	/*
 	 * Root cgroup path to scan for child cgroups.

@@ -61,93 +61,7 @@ int cgr_do_reclaim(struct cgr_ctx *ctx, struct cgr_group *g, uint64_t target)
 	return ret;
 }
 
-/* ---------- rebalance ---------- */
-
-/*
- * Redistribute memory.max across all managed cgroups.
- * Foreground cgroup(s) get fg_ratio of the pool.
- * Remaining pool is split equally among background cgroups.
- * Each cgroup's limit is clamped to >= CGR_MIN_LIMIT_BYTES.
- *
- * Called with ctx->lock held for WRITE.
- */
-void cgr_rebalance(struct cgr_ctx *ctx)
-{
-	uint64_t pool = ctx->cfg.total_pool;
-	uint64_t fg_budget, bg_budget, bg_each;
-	int fg_count = 0, bg_count = 0;
-	int i;
-
-	/* Count foreground/background groups */
-	for (i = 0; i < CGR_MAX_GROUPS; i++) {
-		if (!ctx->groups[i].active)
-			continue;
-		if (ctx->groups[i].is_foreground)
-			fg_count++;
-		else
-			bg_count++;
-	}
-
-	if (fg_count == 0 && bg_count == 0)
-		return;
-
-	/*
-	 * If no foreground is set, distribute equally.
-	 * Otherwise, foreground gets fg_ratio, rest split among background.
-	 */
-	if (fg_count == 0) {
-		bg_each = pool / (bg_count > 0 ? bg_count : 1);
-		if (bg_each < CGR_MIN_LIMIT_BYTES)
-			bg_each = CGR_MIN_LIMIT_BYTES;
-
-		for (i = 0; i < CGR_MAX_GROUPS; i++) {
-			if (!ctx->groups[i].active)
-				continue;
-			ctx->groups[i].limit = bg_each;
-		}
-	} else {
-		fg_budget = (uint64_t)(pool * ctx->cfg.fg_ratio);
-		bg_budget = pool - fg_budget;
-
-		/* Split fg_budget among foreground cgroups */
-		uint64_t fg_each = fg_budget / fg_count;
-		if (fg_each < CGR_MIN_LIMIT_BYTES)
-			fg_each = CGR_MIN_LIMIT_BYTES;
-
-		/* Split bg_budget among background cgroups */
-		if (bg_count > 0) {
-			bg_each = bg_budget / bg_count;
-			if (bg_each < CGR_MIN_LIMIT_BYTES)
-				bg_each = CGR_MIN_LIMIT_BYTES;
-		} else {
-			bg_each = 0;
-		}
-
-		for (i = 0; i < CGR_MAX_GROUPS; i++) {
-			if (!ctx->groups[i].active)
-				continue;
-			if (ctx->groups[i].is_foreground)
-				ctx->groups[i].limit = fg_each;
-			else
-				ctx->groups[i].limit = bg_each;
-		}
-	}
-
-	/* Apply limits — reclaim first if usage exceeds new limit */
-	for (i = 0; i < CGR_MAX_GROUPS; i++) {
-		struct cgr_group *g = &ctx->groups[i];
-
-		if (!g->active)
-			continue;
-
-		if (g->usage > g->limit)
-			cgr_do_reclaim(ctx, g, g->limit);
-
-		cg_write_uint64(g->path, "memory.max", g->limit);
-	}
-}
-
-/* ---------- monitor thread ---------- */
+/* ---------- idle detection ---------- */
 
 /*
  * Idle detection based on workingset refault counters.
@@ -182,10 +96,74 @@ static void sample_refault(struct cgr_ctx *ctx)
 	}
 }
 
+/* ---------- adaptive limit adjustment ---------- */
+
+/*
+ * Per-cgroup growth/shrink factors.
+ * Grow faster than shrink to react quickly to pressure while
+ * avoiding oscillation on the way down.
+ */
+#define GROW_FACTOR	1.10	/* +10% when refault detected */
+#define SHRINK_FACTOR	0.95	/* -5% when idle */
+
+/*
+ * Adjust memory.max for each cgroup independently based on refault.
+ *   refault detected → grow limit (working set exceeds allocation)
+ *   no refault       → shrink limit (has headroom to give back)
+ *
+ * Never shrinks below current usage (avoids unnecessary reclaim)
+ * or CGR_MIN_LIMIT_BYTES, whichever is larger.
+ *
+ * Called with ctx->lock held for WRITE.
+ */
+void cgr_adjust_limits(struct cgr_ctx *ctx)
+{
+	int i;
+
+	for (i = 0; i < CGR_MAX_GROUPS; i++) {
+		struct cgr_group *g = &ctx->groups[i];
+		uint64_t new_limit;
+		uint64_t floor;
+
+		if (!g->active)
+			continue;
+
+		if (!is_idle(g)) {
+			/* Pressure — grow */
+			new_limit = (uint64_t)(g->limit * GROW_FACTOR);
+			if (new_limit == g->limit)
+				new_limit = g->limit + CGR_MIN_LIMIT_BYTES;
+		} else {
+			/* Idle — shrink */
+			new_limit = (uint64_t)(g->limit * SHRINK_FACTOR);
+
+			/* Never shrink below current usage */
+			floor = g->usage > CGR_MIN_LIMIT_BYTES
+				? g->usage : CGR_MIN_LIMIT_BYTES;
+			if (new_limit < floor)
+				new_limit = floor;
+		}
+
+		if (new_limit < CGR_MIN_LIMIT_BYTES)
+			new_limit = CGR_MIN_LIMIT_BYTES;
+
+		if (new_limit == g->limit)
+			continue;
+
+		g->limit = new_limit;
+
+		if (g->usage > new_limit)
+			cgr_do_reclaim(ctx, g, new_limit);
+
+		cg_write_uint64(g->path, "memory.max", new_limit);
+	}
+}
+
+/* ---------- monitor thread ---------- */
+
 static void poll_usage(struct cgr_ctx *ctx)
 {
 	int i;
-	int need_rebalance = 0;
 	int do_refault_sample;
 
 	pthread_rwlock_wrlock(&ctx->lock);
@@ -207,22 +185,11 @@ static void poll_usage(struct cgr_ctx *ctx)
 
 		if (cg_read_uint64(g->path, "memory.current", &current) == 0)
 			g->usage = current;
-
-		/*
-		 * Only evaluate idle/active transitions on refault
-		 * sample boundaries, when we have fresh data.
-		 */
-		if (!do_refault_sample)
-			continue;
-
-		if (!g->is_foreground && !is_idle(g))
-			need_rebalance = 1;
-		else if (g->is_foreground && is_idle(g))
-			need_rebalance = 1;
 	}
 
-	if (need_rebalance)
-		cgr_rebalance(ctx);
+	/* Adjust limits only on refault sample boundaries */
+	if (do_refault_sample)
+		cgr_adjust_limits(ctx);
 
 	pthread_rwlock_unlock(&ctx->lock);
 }
@@ -304,9 +271,6 @@ int cgr_set_foreground(struct cgr_ctx *ctx, const char *path)
 			ctx->groups[i].is_foreground = 0;
 	}
 	g->is_foreground = 1;
-
-	/* Immediately rebalance */
-	cgr_rebalance(ctx);
 
 	pthread_rwlock_unlock(&ctx->lock);
 

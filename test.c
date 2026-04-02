@@ -82,9 +82,7 @@ int main(void)
 {
 	uint64_t total_ram = cgr_get_total_ram();
 	struct cgr_config cfg = {
-		.total_pool = 0,	/* auto-detect */
 		.poll_interval_ms = 500,
-		.fg_ratio = 0.6,
 		.scan_root = TEST_CG_BASE,
 		.log_fn = test_log,
 	};
@@ -93,8 +91,6 @@ int main(void)
 
 	fprintf(stderr, "=== cgreclaim test ===\n");
 	fprintf(stderr, "System RAM: %" PRIu64 " MB\n", total_ram >> 20);
-	fprintf(stderr, "Reserve:    %" PRIu64 " MB\n",
-		(uint64_t)(CGR_SYSTEM_RESERVE >> 20));
 
 	/* Setup test cgroups (requires root) */
 	if (setup_test_cgroups() < 0) {
@@ -110,14 +106,11 @@ int main(void)
 		goto out;
 	}
 
-	fprintf(stderr, "Pool:       %" PRIu64 " MB (auto)\n",
-		(uint64_t)((total_ram - CGR_SYSTEM_RESERVE) >> 20));
-
 	/* Auto-scan cgroups under TEST_CG_BASE */
 	found = cgr_scan_cgroups(ctx);
 	fprintf(stderr, "\nScan found %d cgroups\n", found);
 
-	fprintf(stderr, "\n--- initial state (equal distribution) ---\n");
+	fprintf(stderr, "\n--- initial state (existing limits preserved) ---\n");
 	print_status(ctx, TEST_CG_A);
 	print_status(ctx, TEST_CG_B);
 	print_status(ctx, TEST_CG_C);

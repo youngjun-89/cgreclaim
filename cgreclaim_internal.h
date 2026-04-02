@@ -35,6 +35,6 @@ struct cgr_ctx {
 /* Internal helpers shared between cgreclaim.c and monitor.c */
 struct cgr_group *cgr_find_group(struct cgr_ctx *ctx, const char *path);
 int cgr_do_reclaim(struct cgr_ctx *ctx, struct cgr_group *g, uint64_t target);
-void cgr_rebalance(struct cgr_ctx *ctx);
+void cgr_adjust_limits(struct cgr_ctx *ctx);
 
 #endif /* CGRECLAIM_INTERNAL_H */
