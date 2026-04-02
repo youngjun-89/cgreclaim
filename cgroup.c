@@ -112,9 +112,9 @@ int cg_file_exists(const char *cg_path, const char *key)
 int cg_read_refault(const char *cg_path, uint64_t *refault)
 {
 	char path[PATH_MAX];
-	char buf[4096];
+	char buf[8192];
 	int fd;
-	ssize_t n;
+	ssize_t n, total = 0;
 	uint64_t anon = 0, file = 0;
 	char *line, *saveptr;
 
@@ -125,8 +125,15 @@ int cg_read_refault(const char *cg_path, uint64_t *refault)
 	if (fd < 0)
 		return -1;
 
-	n = read(fd, buf, sizeof(buf) - 1);
+	/* Read the entire file — memory.stat can exceed 4KB on some kernels */
+	while (total < (ssize_t)(sizeof(buf) - 1)) {
+		n = read(fd, buf + total, sizeof(buf) - 1 - total);
+		if (n <= 0)
+			break;
+		total += n;
+	}
 	close(fd);
+	n = total;
 
 	if (n <= 0) {
 		errno = EIO;
