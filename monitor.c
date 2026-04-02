@@ -50,13 +50,20 @@ int cgr_do_reclaim(struct cgr_ctx *ctx, struct cgr_group *g, uint64_t target)
 		 * Fallback: temporarily lower memory.high to target.
 		 * The kernel will reclaim pages above memory.high.
 		 * Then restore memory.high to max (unlimited).
+		 *
+		 * Don't lower memory.high below half of current usage —
+		 * forcing the kernel to reclaim too aggressively can
+		 * lock up the system on memory-constrained boards.
 		 */
-		ret = cg_write_uint64(g->path, "memory.high", target);
+		uint64_t high_floor = g->usage / 2;
+		uint64_t high_val = target > high_floor ? target : high_floor;
+		struct timespec ts = {
+			.tv_sec = HIGH_FALLBACK_WAIT_MS / 1000,
+			.tv_nsec = (HIGH_FALLBACK_WAIT_MS % 1000) * 1000000L,
+		};
+
+		ret = cg_write_uint64(g->path, "memory.high", high_val);
 		if (ret == 0) {
-			struct timespec ts = {
-				.tv_sec = HIGH_FALLBACK_WAIT_MS / 1000,
-				.tv_nsec = (HIGH_FALLBACK_WAIT_MS % 1000) * 1000000L,
-			};
 			nanosleep(&ts, NULL);
 			cg_write_uint64(g->path, "memory.high", UINT64_MAX);
 		}
@@ -117,7 +124,14 @@ static void sample_refault(struct cgr_ctx *ctx)
  * avoiding oscillation on the way down.
  */
 #define GROW_FACTOR	1.10	/* +10% when refault detected */
-#define SHRINK_FACTOR	0.95	/* -5% when idle */
+#define SHRINK_FACTOR	0.98	/* -2% when idle (was 5%, too aggressive) */
+
+/*
+ * Headroom above current usage when shrinking.
+ * Prevents setting memory.max exactly at usage, which would
+ * trigger OOM kills from small transient allocations.
+ */
+#define SHRINK_HEADROOM	1.10	/* keep 10% headroom above usage */
 
 /*
  * Adjust memory.max for each cgroup independently based on refault.
@@ -143,16 +157,26 @@ void cgr_adjust_limits(struct cgr_ctx *ctx)
 
 		if (!is_idle(g)) {
 			/* Pressure — grow */
-			new_limit = (uint64_t)(g->limit * GROW_FACTOR);
-			if (new_limit == g->limit)
-				new_limit = g->limit + CGR_MIN_LIMIT_BYTES;
+			if (g->limit > UINT64_MAX / 2) {
+				/* Avoid overflow for very large limits */
+				new_limit = UINT64_MAX;
+			} else {
+				new_limit = (uint64_t)(g->limit * GROW_FACTOR);
+				if (new_limit == g->limit)
+					new_limit = g->limit + CGR_MIN_LIMIT_BYTES;
+			}
 		} else {
 			/* Idle — shrink */
 			new_limit = (uint64_t)(g->limit * SHRINK_FACTOR);
 
-			/* Never shrink below current usage */
-			floor = g->usage > CGR_MIN_LIMIT_BYTES
-				? g->usage : CGR_MIN_LIMIT_BYTES;
+			/*
+			 * Never shrink below current usage + headroom.
+			 * Using stale usage without headroom triggers OOM
+			 * kills from transient allocations between polls.
+			 */
+			floor = (uint64_t)(g->usage * SHRINK_HEADROOM);
+			if (floor < CGR_MIN_LIMIT_BYTES)
+				floor = CGR_MIN_LIMIT_BYTES;
 			if (new_limit < floor)
 				new_limit = floor;
 		}
