@@ -10,7 +10,7 @@
 /* Internal per-cgroup state */
 struct cgr_group {
 	char		path[256];
-	uint64_t	limit;		/* current memory.max target */
+	uint64_t	limit;		/* current memory.high target */
 	uint64_t	usage;		/* last polled memory.current */
 	uint64_t	refault;	/* last sampled refault counter */
 	uint64_t	prev_refault;	/* previous sample (for idle detection) */

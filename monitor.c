@@ -67,12 +67,12 @@ static void sample_refault(struct cgr_ctx *ctx)
 #define SHRINK_HEADROOM	1.10	/* keep 10% headroom above usage */
 
 /*
- * Adjust memory.max for each cgroup independently based on refault.
+ * Adjust memory.high for each cgroup independently based on refault.
  *   refault detected → grow limit (working set exceeds allocation)
  *   no refault       → shrink limit (has headroom to give back)
  *
- * Never shrinks below current usage (avoids unnecessary reclaim)
- * or CGR_MIN_LIMIT_BYTES, whichever is larger.
+ * Never shrinks below CGR_MIN_LIMIT_BYTES.
+ * memory.high is a soft limit; the kernel reclaims gradually.
  *
  * Called with ctx->lock held for WRITE.
  */
@@ -83,7 +83,6 @@ void cgr_adjust_limits(struct cgr_ctx *ctx)
 	for (i = 0; i < ctx->groups_cap; i++) {
 		struct cgr_group *g = &ctx->groups[i];
 		uint64_t new_limit;
-		uint64_t floor;
 
 		if (!g->active)
 			continue;
@@ -101,17 +100,6 @@ void cgr_adjust_limits(struct cgr_ctx *ctx)
 		} else {
 			/* Idle — shrink */
 			new_limit = (uint64_t)(g->limit * SHRINK_FACTOR);
-
-			/*
-			 * Never shrink below current usage + headroom.
-			 * Using stale usage without headroom triggers OOM
-			 * kills from transient allocations between polls.
-			 */
-			floor = (uint64_t)(g->usage * SHRINK_HEADROOM);
-			if (floor < CGR_MIN_LIMIT_BYTES)
-				floor = CGR_MIN_LIMIT_BYTES;
-			if (new_limit < floor)
-				new_limit = floor;
 		}
 
 		if (new_limit < CGR_MIN_LIMIT_BYTES)
@@ -132,7 +120,7 @@ void cgr_adjust_limits(struct cgr_ctx *ctx)
 
 		g->limit = new_limit;
 
-		cg_write_uint64(g->path, "memory.max", new_limit);
+		cg_write_uint64(g->path, "memory.high", new_limit);
 	}
 }
 
@@ -290,7 +278,7 @@ int cgr_set_limit(struct cgr_ctx *ctx, const char *path, uint64_t new_limit)
 
 	g->limit = new_limit;
 
-	ret = cg_write_uint64(path, "memory.max", new_limit);
+	ret = cg_write_uint64(path, "memory.high", new_limit);
 
 	pthread_rwlock_unlock(&ctx->lock);
 

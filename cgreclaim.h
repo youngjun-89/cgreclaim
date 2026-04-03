@@ -30,7 +30,7 @@ enum cgr_err {
 /* Per-cgroup status info */
 struct cgr_status {
 	char		path[256];
-	uint64_t	limit;		/* current memory.max */
+	uint64_t	limit;		/* current memory.high */
 	uint64_t	usage;		/* last known memory.current */
 	int		is_foreground;
 	uint64_t	reclaim_count;	/* number of reclaims performed */

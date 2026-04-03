@@ -136,8 +136,8 @@ int cgr_add_cgroup(struct cgr_ctx *ctx, const char *path)
 		return CGR_ERR_NOMEM;
 	}
 
-	/* Read current memory.max — keep it as-is */
-	if (cg_read_uint64(path, "memory.max", &current_max) < 0)
+	/* Read current memory.high — keep it as-is */
+	if (cg_read_uint64(path, "memory.high", &current_max) < 0)
 		current_max = UINT64_MAX;
 
 	snprintf(g->path, sizeof(g->path), "%s", path);
@@ -173,8 +173,8 @@ int cgr_remove_cgroup(struct cgr_ctx *ctx, const char *path)
 		return CGR_ERR_NOENT;
 	}
 
-	/* Reset memory.max to unlimited before removing */
-	cg_write_uint64(path, "memory.max", UINT64_MAX);
+	/* Reset memory.high to unlimited before removing */
+	cg_write_uint64(path, "memory.high", UINT64_MAX);
 
 	cgr_log(ctx, CGR_LOG_INFO, "remove_cgroup: %s nr_groups=%d",
 		path, ctx->nr_groups - 1);
