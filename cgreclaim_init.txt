@@ -1,0 +1,27 @@
+static struct cgr_ctx *cgreclaim_init(void)
+{
+	struct cgr_config cfg = {
+		.poll_interval_ms = 100,
+		.scan_root        = "/sys/fs/cgroup",
+		.log_fn           = cgr_log_file,
+	};
+
+	/* Optional: log file open may fail early if /home/root mount is not ready.
+	 * cgr_log_file() will retry lazily on actual log writes.
+	 */
+	if (cgr_log_open() < 0)
+		fprintf(stderr, "cgreclaim: log open deferred (%s)\n", CGR_LOG_PATH);
+
+	struct cgr_ctx *ctx = cgr_init(&cfg);
+	if (!ctx)
+		return NULL;
+
+	int n = cgr_scan_cgroups(ctx);
+	if (n < 0) {
+		cgr_destroy(ctx);
+		return NULL;
+	}
+
+	cgr_start(ctx);
+	return ctx;
+}

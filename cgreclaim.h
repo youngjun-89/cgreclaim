@@ -7,9 +7,6 @@
 /* Minimum memory limit for any cgroup (32MB) */
 #define CGR_MIN_LIMIT_BYTES	(32ULL << 20)
 
-/* Maximum number of managed cgroups */
-#define CGR_MAX_GROUPS		16
-
 /* Log levels */
 enum cgr_log_level {
 	CGR_LOG_ERR = 0,
@@ -23,7 +20,7 @@ enum cgr_err {
 	CGR_OK = 0,
 	CGR_ERR_INVAL = -1,	/* invalid argument */
 	CGR_ERR_NOMEM = -2,	/* out of memory */
-	CGR_ERR_FULL  = -3,	/* max cgroups reached */
+	CGR_ERR_FULL  = -3,	/* (unused, kept for ABI compat) */
 	CGR_ERR_EXIST = -4,	/* cgroup already registered */
 	CGR_ERR_NOENT = -5,	/* cgroup not found */
 	CGR_ERR_IO    = -6,	/* cgroup I/O error */

@@ -4,6 +4,9 @@
 #include "cgreclaim.h"
 #include <pthread.h>
 
+/* Initial capacity for the dynamic groups array; doubles on each grow. */
+#define CGR_GROUPS_INIT_CAP	16
+
 /* Internal per-cgroup state */
 struct cgr_group {
 	char		path[256];
@@ -20,8 +23,9 @@ struct cgr_group {
 struct cgr_ctx {
 	struct cgr_config	cfg;
 	char			scan_root[256]; /* owned copy */
-	struct cgr_group	groups[CGR_MAX_GROUPS];
-	int			nr_groups;
+	struct cgr_group	*groups;	/* dynamically allocated array */
+	int			groups_cap;	/* allocated slots */
+	int			nr_groups;	/* active slots */
 
 	pthread_rwlock_t	lock;
 	pthread_t		monitor_tid;

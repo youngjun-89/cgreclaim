@@ -102,7 +102,7 @@ static void sample_refault(struct cgr_ctx *ctx)
 {
 	int i;
 
-	for (i = 0; i < CGR_MAX_GROUPS; i++) {
+	for (i = 0; i < ctx->groups_cap; i++) {
 		struct cgr_group *g = &ctx->groups[i];
 		uint64_t rf;
 
@@ -147,7 +147,7 @@ void cgr_adjust_limits(struct cgr_ctx *ctx)
 {
 	int i;
 
-	for (i = 0; i < CGR_MAX_GROUPS; i++) {
+	for (i = 0; i < ctx->groups_cap; i++) {
 		struct cgr_group *g = &ctx->groups[i];
 		uint64_t new_limit;
 		uint64_t floor;
@@ -223,7 +223,7 @@ static void poll_usage(struct cgr_ctx *ctx)
 		sample_refault(ctx);
 	}
 
-	for (i = 0; i < CGR_MAX_GROUPS; i++) {
+	for (i = 0; i < ctx->groups_cap; i++) {
 		struct cgr_group *g = &ctx->groups[i];
 		uint64_t current;
 
@@ -322,7 +322,7 @@ int cgr_set_foreground(struct cgr_ctx *ctx, const char *path)
 	}
 
 	/* Clear all foreground flags, set the new one */
-	for (i = 0; i < CGR_MAX_GROUPS; i++) {
+	for (i = 0; i < ctx->groups_cap; i++) {
 		if (ctx->groups[i].active)
 			ctx->groups[i].is_foreground = 0;
 	}

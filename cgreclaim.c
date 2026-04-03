@@ -16,7 +16,7 @@ struct cgr_group *cgr_find_group(struct cgr_ctx *ctx, const char *path)
 {
 	int i;
 
-	for (i = 0; i < CGR_MAX_GROUPS; i++) {
+	for (i = 0; i < ctx->groups_cap; i++) {
 		if (ctx->groups[i].active &&
 		    strcmp(ctx->groups[i].path, path) == 0)
 			return &ctx->groups[i];
@@ -26,13 +26,26 @@ struct cgr_group *cgr_find_group(struct cgr_ctx *ctx, const char *path)
 
 static struct cgr_group *find_free_slot(struct cgr_ctx *ctx)
 {
-	int i;
+	struct cgr_group *new_groups;
+	int i, new_cap, old_cap;
 
-	for (i = 0; i < CGR_MAX_GROUPS; i++) {
+	for (i = 0; i < ctx->groups_cap; i++) {
 		if (!ctx->groups[i].active)
 			return &ctx->groups[i];
 	}
-	return NULL;
+
+	/* No free slot — grow the array */
+	old_cap = ctx->groups_cap;
+	new_cap = old_cap * 2;
+	new_groups = realloc(ctx->groups, new_cap * sizeof(*new_groups));
+	if (!new_groups)
+		return NULL;
+
+	memset(new_groups + old_cap, 0, old_cap * sizeof(*new_groups));
+	ctx->groups = new_groups;
+	ctx->groups_cap = new_cap;
+
+	return &ctx->groups[old_cap];
 }
 
 /* ---------- utility ---------- */
@@ -59,6 +72,13 @@ struct cgr_ctx *cgr_init(const struct cgr_config *cfg)
 	ctx = calloc(1, sizeof(*ctx));
 	if (!ctx)
 		return NULL;
+
+	ctx->groups = calloc(CGR_GROUPS_INIT_CAP, sizeof(*ctx->groups));
+	if (!ctx->groups) {
+		free(ctx);
+		return NULL;
+	}
+	ctx->groups_cap = CGR_GROUPS_INIT_CAP;
 
 	ctx->cfg = *cfg;
 
@@ -97,6 +117,7 @@ void cgr_destroy(struct cgr_ctx *ctx)
 		cgr_stop(ctx);
 
 	pthread_rwlock_destroy(&ctx->lock);
+	free(ctx->groups);
 	free(ctx);
 }
 
@@ -120,7 +141,7 @@ int cgr_add_cgroup(struct cgr_ctx *ctx, const char *path)
 	g = find_free_slot(ctx);
 	if (!g) {
 		pthread_rwlock_unlock(&ctx->lock);
-		return CGR_ERR_FULL;
+		return CGR_ERR_NOMEM;
 	}
 
 	/* Read current memory.max — keep it as-is */
@@ -216,9 +237,6 @@ int cgr_scan_cgroups(struct cgr_ctx *ctx)
 
 		if (cgr_add_cgroup(ctx, child_path) == CGR_OK)
 			found++;
-
-		if (ctx->nr_groups >= CGR_MAX_GROUPS)
-			break;
 	}
 
 	closedir(dir);
