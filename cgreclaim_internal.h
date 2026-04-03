@@ -4,6 +4,13 @@
 #include "cgreclaim.h"
 #include <pthread.h>
 
+/* Refault pressure urgency levels, derived from refault rate (slope). */
+enum cgr_refault_urgency {
+	CGR_REFAULT_IDLE = 0,	/* no new refaults */
+	CGR_REFAULT_MODERATE,	/* slow refault rate — mild pressure */
+	CGR_REFAULT_URGENT,	/* fast refault rate — severe pressure */
+};
+
 /* Initial capacity for the dynamic groups array; doubles on each grow. */
 #define CGR_GROUPS_INIT_CAP	16
 

@@ -17,13 +17,39 @@
 /* ---------- thrashing detection ---------- */
 
 /*
- * Thrashing detection based on workingset refault counters.
- * A cgroup is thrashing if new refaults occurred between two samples,
- * meaning evicted pages are being re-accessed (working set exceeds limit).
+ * Refault slope thresholds (refaults per sample window).
+ *
+ * Each sample window = REFAULT_SAMPLE_INTERVAL × poll_interval_ms.
+ * With defaults (5 × 1000ms = 5s), 1 unit here ≈ 0.2 refaults/sec.
+ *
+ * These values should be tuned empirically.
  */
-static int is_thrashing(struct cgr_group *g)
+#define REFAULT_SLOPE_MODERATE_THRESHOLD	10	/* mild pressure */
+#define REFAULT_SLOPE_URGENT_THRESHOLD		100	/* severe pressure */
+
+/*
+ * Classify refault pressure by computing the slope (delta refaults per
+ * sample window) and comparing against thresholds.
+ *
+ * IDLE     — no new refaults; working set fits within memory.high
+ * MODERATE — slow growth; some pages are being re-faulted
+ * URGENT   — rapid growth; working set significantly exceeds limit
+ */
+static enum cgr_refault_urgency refault_urgency(const struct cgr_group *g)
 {
-	return g->refault != g->prev_refault;
+	uint64_t slope;
+
+	if (g->refault <= g->prev_refault)
+		return CGR_REFAULT_IDLE;
+
+	slope = g->refault - g->prev_refault;
+
+	if (slope >= REFAULT_SLOPE_URGENT_THRESHOLD)
+		return CGR_REFAULT_URGENT;
+	if (slope >= REFAULT_SLOPE_MODERATE_THRESHOLD)
+		return CGR_REFAULT_MODERATE;
+
+	return CGR_REFAULT_IDLE;
 }
 
 /*
@@ -55,8 +81,11 @@ static void sample_refault(struct cgr_ctx *ctx)
  * Grow faster than shrink to react quickly to pressure while
  * avoiding oscillation on the way down.
  */
-#define GROW_FACTOR	1.10	/* +10% when thrashing */
-#define SHRINK_FACTOR	0.95	/* -5% always (baseline) */
+#define GROW_FACTOR_URGENT	1.20	/* +20% on severe refault slope */
+#define GROW_FACTOR_MODERATE	1.10	/* +10% on mild refault slope */
+#define SHRINK_FACTOR		0.95	/* -5%  when idle (no refaults) */
+
+static const char *urgency_str[] = { "IDLE", "MODERATE", "URGENT" };
 
 /*
  * Adjust memory.high for each cgroup independently based on refault.
@@ -75,19 +104,30 @@ void cgr_adjust_limits(struct cgr_ctx *ctx)
 
 	for (i = 0; i < ctx->groups_cap; i++) {
 		struct cgr_group *g = &ctx->groups[i];
-		uint64_t new_limit;
+		enum cgr_refault_urgency urgency;
+		uint64_t slope, new_limit;
 
 		if (!g->active)
 			continue;
 
-		if (is_thrashing(g)) {
-			/* Thrashing — raise memory.high */
-			new_limit = (uint64_t)(g->limit * GROW_FACTOR);
+		urgency = refault_urgency(g);
+		slope = (g->refault > g->prev_refault)
+			? g->refault - g->prev_refault : 0;
+
+		switch (urgency) {
+		case CGR_REFAULT_URGENT:
+			new_limit = (uint64_t)(g->limit * GROW_FACTOR_URGENT);
 			if (new_limit == g->limit)
 				new_limit = g->limit + CGR_MIN_LIMIT_BYTES;
-		} else {
-			/* Idle — lower memory.high */
+			break;
+		case CGR_REFAULT_MODERATE:
+			new_limit = (uint64_t)(g->limit * GROW_FACTOR_MODERATE);
+			if (new_limit == g->limit)
+				new_limit = g->limit + CGR_MIN_LIMIT_BYTES;
+			break;
+		default: /* CGR_REFAULT_IDLE */
 			new_limit = (uint64_t)(g->limit * SHRINK_FACTOR);
+			break;
 		}
 
 		if (new_limit < CGR_MIN_LIMIT_BYTES)
@@ -97,14 +137,13 @@ void cgr_adjust_limits(struct cgr_ctx *ctx)
 			continue;
 
 		cgr_log(ctx, CGR_LOG_INFO,
-			"adjust: %s %s %luMB -> %luMB (usage=%luMB refault=%lu prev_refault=%lu)",
+			"adjust: %s [%s slope=%lu] %luMB -> %luMB (usage=%luMB)",
 			g->path,
-			is_thrashing(g) ? "GROW" : "SHRINK",
+			urgency_str[urgency],
+			(unsigned long)slope,
 			(unsigned long)(g->limit >> 20),
 			(unsigned long)(new_limit >> 20),
-			(unsigned long)(g->usage >> 20),
-			(unsigned long)g->refault,
-			(unsigned long)g->prev_refault);
+			(unsigned long)(g->usage >> 20));
 
 		g->limit = new_limit;
 
