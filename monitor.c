@@ -14,17 +14,16 @@
  */
 #define REFAULT_SAMPLE_INTERVAL	5
 
-/* ---------- idle detection ---------- */
+/* ---------- thrashing detection ---------- */
 
 /*
- * Idle detection based on workingset refault counters.
- * A cgroup is idle if no refaults occurred between two samples,
- * meaning its working set fits within its allocation and nothing
- * evicted is being re-accessed.
+ * Thrashing detection based on workingset refault counters.
+ * A cgroup is thrashing if new refaults occurred between two samples,
+ * meaning evicted pages are being re-accessed (working set exceeds limit).
  */
-static int is_idle(struct cgr_group *g)
+static int is_thrashing(struct cgr_group *g)
 {
-	return g->refault == g->prev_refault;
+	return g->refault != g->prev_refault;
 }
 
 /*
@@ -56,20 +55,14 @@ static void sample_refault(struct cgr_ctx *ctx)
  * Grow faster than shrink to react quickly to pressure while
  * avoiding oscillation on the way down.
  */
-#define GROW_FACTOR	1.10	/* +10% when refault detected */
-#define SHRINK_FACTOR	0.98	/* -2% when idle (was 5%, too aggressive) */
-
-/*
- * Headroom above current usage when shrinking.
- * Prevents setting memory.max exactly at usage, which would
- * trigger OOM kills from small transient allocations.
- */
-#define SHRINK_HEADROOM	1.10	/* keep 10% headroom above usage */
+#define GROW_FACTOR	1.10	/* +10% when thrashing */
+#define SHRINK_FACTOR	0.95	/* -5% always (baseline) */
 
 /*
  * Adjust memory.high for each cgroup independently based on refault.
- *   refault detected → grow limit (working set exceeds allocation)
- *   no refault       → shrink limit (has headroom to give back)
+ * memory.high is always decreased to apply steady reclaim pressure.
+ * When thrashing is detected, memory.high is raised instead to relieve
+ * the working set.
  *
  * Never shrinks below CGR_MIN_LIMIT_BYTES.
  * memory.high is a soft limit; the kernel reclaims gradually.
@@ -87,18 +80,13 @@ void cgr_adjust_limits(struct cgr_ctx *ctx)
 		if (!g->active)
 			continue;
 
-		if (!is_idle(g)) {
-			/* Pressure — grow */
-			if (g->limit > UINT64_MAX / 2) {
-				/* Avoid overflow for very large limits */
-				new_limit = UINT64_MAX;
-			} else {
-				new_limit = (uint64_t)(g->limit * GROW_FACTOR);
-				if (new_limit == g->limit)
-					new_limit = g->limit + CGR_MIN_LIMIT_BYTES;
-			}
+		if (is_thrashing(g)) {
+			/* Thrashing — raise memory.high */
+			new_limit = (uint64_t)(g->limit * GROW_FACTOR);
+			if (new_limit == g->limit)
+				new_limit = g->limit + CGR_MIN_LIMIT_BYTES;
 		} else {
-			/* Idle — shrink */
+			/* Idle — lower memory.high */
 			new_limit = (uint64_t)(g->limit * SHRINK_FACTOR);
 		}
 
@@ -111,7 +99,7 @@ void cgr_adjust_limits(struct cgr_ctx *ctx)
 		cgr_log(ctx, CGR_LOG_INFO,
 			"adjust: %s %s %luMB -> %luMB (usage=%luMB refault=%lu prev_refault=%lu)",
 			g->path,
-			!is_idle(g) ? "GROW" : "SHRINK",
+			is_thrashing(g) ? "GROW" : "SHRINK",
 			(unsigned long)(g->limit >> 20),
 			(unsigned long)(new_limit >> 20),
 			(unsigned long)(g->usage >> 20),
