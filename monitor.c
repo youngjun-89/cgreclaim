@@ -14,73 +14,6 @@
  */
 #define REFAULT_SAMPLE_INTERVAL	5
 
-/*
- * When using memory.high fallback, wait this long for the kernel
- * to reclaim before restoring memory.high.
- */
-#define HIGH_FALLBACK_WAIT_MS	100
-
-/* ---------- reclaim ---------- */
-
-/*
- * Perform proactive reclaim to bring a cgroup's usage down to target.
- * Called with ctx->lock held for WRITE.
- */
-int cgr_do_reclaim(struct cgr_ctx *ctx, struct cgr_group *g, uint64_t target)
-{
-	uint64_t to_reclaim;
-	int ret;
-
-	if (g->usage <= target)
-		return 0;
-
-	to_reclaim = g->usage - target;
-
-	cgr_log(ctx, CGR_LOG_INFO, "reclaim: %s usage=%luMB target=%luMB reclaim=%luMB method=%s",
-		g->path,
-		(unsigned long)(g->usage >> 20),
-		(unsigned long)(target >> 20),
-		(unsigned long)(to_reclaim >> 20),
-		ctx->reclaim_supported ? "memory.reclaim" : "memory.high");
-
-	if (ctx->reclaim_supported) {
-		ret = cg_write_reclaim(g->path, to_reclaim);
-	} else {
-		/*
-		 * Fallback: temporarily lower memory.high to target.
-		 * The kernel will reclaim pages above memory.high.
-		 * Then restore memory.high to max (unlimited).
-		 *
-		 * Don't lower memory.high below half of current usage —
-		 * forcing the kernel to reclaim too aggressively can
-		 * lock up the system on memory-constrained boards.
-		 */
-		uint64_t high_floor = g->usage / 2;
-		uint64_t high_val = target > high_floor ? target : high_floor;
-		struct timespec ts = {
-			.tv_sec = HIGH_FALLBACK_WAIT_MS / 1000,
-			.tv_nsec = (HIGH_FALLBACK_WAIT_MS % 1000) * 1000000L,
-		};
-
-		ret = cg_write_uint64(g->path, "memory.high", high_val);
-		if (ret == 0) {
-			nanosleep(&ts, NULL);
-			cg_write_uint64(g->path, "memory.high", UINT64_MAX);
-		}
-	}
-
-	if (ret == 0) {
-		g->reclaim_count++;
-		cgr_log(ctx, CGR_LOG_DEBUG, "reclaim: %s success (total=%lu)",
-			g->path, (unsigned long)g->reclaim_count);
-	} else {
-		cgr_log(ctx, CGR_LOG_ERR, "reclaim: %s FAILED",
-			g->path);
-	}
-
-	return ret;
-}
-
 /* ---------- idle detection ---------- */
 
 /*
@@ -198,9 +131,6 @@ void cgr_adjust_limits(struct cgr_ctx *ctx)
 			(unsigned long)g->prev_refault);
 
 		g->limit = new_limit;
-
-		if (g->usage > new_limit)
-			cgr_do_reclaim(ctx, g, new_limit);
 
 		cg_write_uint64(g->path, "memory.max", new_limit);
 	}
@@ -359,10 +289,6 @@ int cgr_set_limit(struct cgr_ctx *ctx, const char *path, uint64_t new_limit)
 		(unsigned long)(new_limit >> 20));
 
 	g->limit = new_limit;
-
-	/* Reclaim if current usage exceeds new limit */
-	if (g->usage > new_limit)
-		cgr_do_reclaim(ctx, g, new_limit);
 
 	ret = cg_write_uint64(path, "memory.max", new_limit);
 

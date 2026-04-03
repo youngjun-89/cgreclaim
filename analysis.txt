@@ -1,0 +1,35 @@
+cgr_adjust_limits
+
+@is_idle 체크
+
+- refault가 있냐 없냐로 일단 체크.
+1. refault 비율 ?
+2. 다른 수치는?
+- rss top 10
+
+2. 최초 줄일 때, 무슨 값 부터 줄이는 걸로 할까?
+- 현재는 딱히 기준 없음.
+- current 값 이하로 줄인다? 등등
+- 그 다음 percentage 기준으로 높이고, 올린다.
+
+3. 주기 (현재 1초, grow & reduce)
+- grow 전략은 맞는지
+- 1초 적절한지
+
+4. cgroup 대상? (현재는 "/")
+- 서비스 대상으로 하는게 맞는지.
+
+5. foreground & 주요 앱  몰아주면 어디서 땡겨오지??
+- 높게 평가해야 되는 앱 프로세스?
+(주요 앱 foreground. 그 시점 되면 땡겨오게 해야 되지 않나? high도
+원복 시켜놓고. 확 올릴는 순간.)
+
+6. app background 등등 될 때 확 땡기는 순간도?
+
+7. memory.max vs memory.high
+
+
+추가 기능 구현
+- 동적으로 cgroup 더해지고, 빠지는거
+- psi 연동
+- cgreclaim thread 우선순위 스케쥴링 문제.

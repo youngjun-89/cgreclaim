@@ -93,17 +93,9 @@ struct cgr_ctx *cgr_init(const struct cgr_config *cfg)
 
 	pthread_rwlock_init(&ctx->lock, NULL);
 
-	/*
-	 * Detect memory.reclaim support by checking the root cgroup.
-	 * Not all kernels have this knob (added in 5.19).
-	 */
-	ctx->reclaim_supported = cg_file_exists("/sys/fs/cgroup",
-						"memory.reclaim");
-
-	cgr_log(ctx, CGR_LOG_INFO, "cgr_init: poll=%ums scan_root=%s reclaim_supported=%d",
+	cgr_log(ctx, CGR_LOG_INFO, "cgr_init: poll=%ums scan_root=%s",
 		ctx->cfg.poll_interval_ms,
-		ctx->scan_root[0] ? ctx->scan_root : "(none)",
-		ctx->reclaim_supported);
+		ctx->scan_root[0] ? ctx->scan_root : "(none)");
 
 	return ctx;
 }

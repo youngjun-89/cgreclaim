@@ -30,7 +30,6 @@ struct cgr_ctx {
 	pthread_rwlock_t	lock;
 	pthread_t		monitor_tid;
 	volatile int		running;
-	int			reclaim_supported;
 	unsigned int		poll_count;	/* polls since last refault sample */
 
 	void (*log_fn)(int level, const char *fmt, ...);
@@ -45,7 +44,6 @@ struct cgr_ctx {
 
 /* Internal helpers shared between cgreclaim.c and monitor.c */
 struct cgr_group *cgr_find_group(struct cgr_ctx *ctx, const char *path);
-int cgr_do_reclaim(struct cgr_ctx *ctx, struct cgr_group *g, uint64_t target);
 void cgr_adjust_limits(struct cgr_ctx *ctx);
 
 #endif /* CGRECLAIM_INTERNAL_H */

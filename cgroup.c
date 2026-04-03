@@ -93,11 +93,6 @@ int cg_write_uint64(const char *cg_path, const char *key, uint64_t val)
 	return 0;
 }
 
-int cg_write_reclaim(const char *cg_path, uint64_t bytes)
-{
-	return cg_write_uint64(cg_path, "memory.reclaim", bytes);
-}
-
 int cg_file_exists(const char *cg_path, const char *key)
 {
 	char path[PATH_MAX];
