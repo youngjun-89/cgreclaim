@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/inotify.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -19,10 +20,10 @@
 #define REFAULT_SAMPLE_INTERVAL	5
 
 /*
- * Rescan interval: how often (in polls) to rescan scan_root for
- * newly appeared cgroups.  With default 1s poll this is ~30 seconds.
+ * Config reload interval: how often (in polls) to re-read the
+ * runtime configuration file.  With default 1s poll this is ~30s.
  */
-#define RESCAN_INTERVAL		30
+#define CONFIG_RELOAD_INTERVAL	30
 
 /* ---------- thrashing detection ---------- */
 
@@ -164,7 +165,6 @@ static void poll_usage(struct cgr_ctx *ctx)
 {
 	int i;
 	int do_refault_sample;
-	int do_rescan;
 
 	pthread_rwlock_wrlock(&ctx->lock);
 
@@ -175,12 +175,6 @@ static void poll_usage(struct cgr_ctx *ctx)
 		ctx->poll_count = 0;
 		sample_refault(ctx);
 	}
-
-	/* Periodically rescan for newly appeared cgroups */
-	ctx->rescan_count++;
-	do_rescan = (ctx->rescan_count >= RESCAN_INTERVAL && ctx->scan_root[0]);
-	if (do_rescan)
-		ctx->rescan_count = 0;
 
 	for (i = 0; i < ctx->groups_cap; i++) {
 		struct cgr_group *g = &ctx->groups[i];
@@ -195,28 +189,20 @@ static void poll_usage(struct cgr_ctx *ctx)
 
 	/* Adjust limits only on refault sample boundaries */
 	if (do_refault_sample) {
-		cgr_log(ctx, CGR_LOG_DEBUG, "poll: refault sample #%u, adjusting limits",
-			ctx->poll_count);
+		cgr_log(ctx, CGR_LOG_DEBUG, "poll: refault sample, adjusting limits");
 		cgr_adjust_limits(ctx);
 	}
 
-	pthread_rwlock_unlock(&ctx->lock);
-
-	/*
-	 * Rescan outside the lock — cgr_scan_cgroups() calls
-	 * cgr_add_cgroup() which takes its own wrlock.
-	 * Also reload config file on the same interval.
-	 */
-	if (do_rescan) {
-		int found;
-
+	/* Periodically reload config file */
+	ctx->config_reload_count++;
+	if (ctx->config_reload_count >= CONFIG_RELOAD_INTERVAL) {
+		ctx->config_reload_count = 0;
+		pthread_rwlock_unlock(&ctx->lock);
 		cgr_config_load(ctx);
-
-		found = cgr_scan_cgroups(ctx);
-		if (found > 0)
-			cgr_log(ctx, CGR_LOG_INFO,
-				"rescan: discovered %d new cgroup(s)", found);
+		return;
 	}
+
+	pthread_rwlock_unlock(&ctx->lock);
 }
 
 /*
@@ -229,6 +215,76 @@ static void poll_usage(struct cgr_ctx *ctx)
 static int is_path_accessible(void)
 {
 	return access(MOUNT_WAIT_PATH, R_OK | X_OK) == 0;
+}
+
+/*
+ * inotify watcher thread — monitors scan_root for new cgroup
+ * directories and registers them automatically via cgr_add_cgroup().
+ * Event-driven; no polling overhead.
+ */
+static void *inotify_thread(void *arg)
+{
+	struct cgr_ctx *ctx = arg;
+	int ifd, wd;
+	char buf[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
+
+	ifd = inotify_init1(IN_CLOEXEC);
+	if (ifd < 0) {
+		cgr_log(ctx, CGR_LOG_ERR, "inotify: init failed: %s",
+			strerror(errno));
+		return NULL;
+	}
+
+	wd = inotify_add_watch(ifd, ctx->scan_root,
+			       IN_CREATE | IN_MOVED_TO | IN_ONLYDIR);
+	if (wd < 0) {
+		cgr_log(ctx, CGR_LOG_ERR, "inotify: watch %s failed: %s",
+			ctx->scan_root, strerror(errno));
+		close(ifd);
+		return NULL;
+	}
+
+	cgr_log(ctx, CGR_LOG_INFO, "inotify: watching %s for new cgroups",
+		ctx->scan_root);
+
+	while (ctx->running) {
+		ssize_t len;
+		const struct inotify_event *ev;
+		char *ptr;
+
+		len = read(ifd, buf, sizeof(buf));
+		if (len <= 0) {
+			if (errno == EINTR)
+				continue;
+			break;
+		}
+
+		for (ptr = buf; ptr < buf + len;
+		     ptr += sizeof(*ev) + ev->len) {
+			char child_path[512];
+
+			ev = (const struct inotify_event *)ptr;
+
+			if (!(ev->mask & (IN_CREATE | IN_MOVED_TO)))
+				continue;
+			if (!(ev->mask & IN_ISDIR))
+				continue;
+			if (!ev->len || ev->name[0] == '.')
+				continue;
+
+			snprintf(child_path, sizeof(child_path), "%s/%s",
+				 ctx->scan_root, ev->name);
+
+			if (cgr_add_cgroup(ctx, child_path) == CGR_OK)
+				cgr_log(ctx, CGR_LOG_INFO,
+					"inotify: added new cgroup %s",
+					child_path);
+		}
+	}
+
+	inotify_rm_watch(ifd, wd);
+	close(ifd);
+	return NULL;
 }
 
 static void *monitor_thread(void *arg)
@@ -249,14 +305,27 @@ static void *monitor_thread(void *arg)
 		nanosleep(&ts, NULL);
 	}
 
-	if (ctx->running) {
-		cgr_log(ctx, CGR_LOG_INFO, "monitor: %s available, loading config",
-			MOUNT_WAIT_PATH);
-		cgr_config_load(ctx);
+	if (!ctx->running)
+		return NULL;
 
-		/* Initial scan after config is loaded */
-		if (ctx->scan_root[0])
-			cgr_scan_cgroups(ctx);
+	cgr_log(ctx, CGR_LOG_INFO, "monitor: %s available, loading config",
+		MOUNT_WAIT_PATH);
+	cgr_config_load(ctx);
+
+	/* Initial scan */
+	if (ctx->scan_root[0])
+		cgr_scan_cgroups(ctx);
+
+	/* Start inotify watcher for live cgroup discovery */
+	if (ctx->scan_root[0]) {
+		int ret = pthread_create(&ctx->inotify_tid, NULL,
+					 inotify_thread, ctx);
+		if (ret != 0)
+			cgr_log(ctx, CGR_LOG_ERR,
+				"monitor: inotify thread failed: %s",
+				strerror(ret));
+		else
+			ctx->inotify_running = 1;
 	}
 
 	while (ctx->running) {
@@ -307,6 +376,17 @@ int cgr_stop(struct cgr_ctx *ctx)
 		return CGR_OK;
 
 	ctx->running = 0;
+
+	/*
+	 * The inotify thread may be blocked in read().
+	 * Cancel it so we don't hang on join.
+	 */
+	if (ctx->inotify_running) {
+		pthread_cancel(ctx->inotify_tid);
+		pthread_join(ctx->inotify_tid, NULL);
+		ctx->inotify_running = 0;
+	}
+
 	pthread_join(ctx->monitor_tid, NULL);
 
 	cgr_log(ctx, CGR_LOG_INFO, "monitor: stopped");

@@ -36,9 +36,11 @@ struct cgr_ctx {
 
 	pthread_rwlock_t	lock;
 	pthread_t		monitor_tid;
+	pthread_t		inotify_tid;
 	volatile int		running;
+	int			inotify_running;
 	unsigned int		poll_count;	/* polls since last refault sample */
-	unsigned int		rescan_count;	/* polls since last cgroup rescan */
+	unsigned int		config_reload_count;
 
 	/* Runtime-tunable thresholds (reloaded from config file) */
 	uint64_t		refault_slope_moderate;	/* default 10 */
