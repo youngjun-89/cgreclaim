@@ -155,11 +155,9 @@ void cgr_adjust_limits(struct cgr_ctx *ctx)
 
 /* ---------- monitor thread ---------- */
 
-/*
- * Forward declaration — defined in cgreclaim.c.
- * Rescans scan_root for new cgroups; already-registered ones are skipped.
- */
+/* Forward declarations — defined in cgreclaim.c. */
 int cgr_scan_cgroups(struct cgr_ctx *ctx);
+int cgr_remove_cgroup(struct cgr_ctx *ctx, const char *path);
 
 static void poll_usage(struct cgr_ctx *ctx)
 {
@@ -236,7 +234,8 @@ static void *inotify_thread(void *arg)
 	}
 
 	wd = inotify_add_watch(ifd, ctx->scan_root,
-			       IN_CREATE | IN_MOVED_TO | IN_ONLYDIR);
+			       IN_CREATE | IN_MOVED_TO |
+			       IN_DELETE | IN_MOVED_FROM | IN_ONLYDIR);
 	if (wd < 0) {
 		cgr_log(ctx, CGR_LOG_ERR, "inotify: watch %s failed: %s",
 			ctx->scan_root, strerror(errno));
@@ -244,7 +243,7 @@ static void *inotify_thread(void *arg)
 		return NULL;
 	}
 
-	cgr_log(ctx, CGR_LOG_INFO, "inotify: watching %s for new cgroups",
+	cgr_log(ctx, CGR_LOG_INFO, "inotify: watching %s",
 		ctx->scan_root);
 
 	while (ctx->running) {
@@ -265,8 +264,6 @@ static void *inotify_thread(void *arg)
 
 			ev = (const struct inotify_event *)ptr;
 
-			if (!(ev->mask & (IN_CREATE | IN_MOVED_TO)))
-				continue;
 			if (!(ev->mask & IN_ISDIR))
 				continue;
 			if (!ev->len || ev->name[0] == '.')
@@ -275,10 +272,17 @@ static void *inotify_thread(void *arg)
 			snprintf(child_path, sizeof(child_path), "%s/%s",
 				 ctx->scan_root, ev->name);
 
-			if (cgr_add_cgroup(ctx, child_path) == CGR_OK)
-				cgr_log(ctx, CGR_LOG_INFO,
-					"inotify: added new cgroup %s",
-					child_path);
+			if (ev->mask & (IN_CREATE | IN_MOVED_TO)) {
+				if (cgr_add_cgroup(ctx, child_path) == CGR_OK)
+					cgr_log(ctx, CGR_LOG_INFO,
+						"inotify: added %s",
+						child_path);
+			} else if (ev->mask & (IN_DELETE | IN_MOVED_FROM)) {
+				if (cgr_remove_cgroup(ctx, child_path) == CGR_OK)
+					cgr_log(ctx, CGR_LOG_INFO,
+						"inotify: removed %s",
+						child_path);
+			}
 		}
 	}
 
