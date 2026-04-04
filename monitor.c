@@ -6,7 +6,6 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -220,11 +219,16 @@ static void poll_usage(struct cgr_ctx *ctx)
 	}
 }
 
-static int is_mount_ready(void)
+/*
+ * Check if /home/root is actually accessible.
+ * The directory itself is not a mount point — when the parent
+ * filesystem (/home) is not yet mounted, the entire path is
+ * unreachable.  Use access() which fails with ENOENT or EACCES
+ * in that case.
+ */
+static int is_path_accessible(void)
 {
-	struct stat st;
-
-	return stat(MOUNT_WAIT_PATH, &st) == 0 && S_ISDIR(st.st_mode);
+	return access(MOUNT_WAIT_PATH, R_OK | X_OK) == 0;
 }
 
 static void *monitor_thread(void *arg)
@@ -239,7 +243,7 @@ static void *monitor_thread(void *arg)
 	 * Logs generated before mount are buffered and flushed later.
 	 */
 	cgr_log(ctx, CGR_LOG_INFO, "monitor: waiting for %s", MOUNT_WAIT_PATH);
-	while (ctx->running && !is_mount_ready()) {
+	while (ctx->running && !is_path_accessible()) {
 		ts.tv_sec = 1;
 		ts.tv_nsec = 0;
 		nanosleep(&ts, NULL);
