@@ -40,6 +40,10 @@ struct cgr_ctx {
 	unsigned int		poll_count;	/* polls since last refault sample */
 	unsigned int		rescan_count;	/* polls since last cgroup rescan */
 
+	/* Runtime-tunable thresholds (reloaded from config file) */
+	uint64_t		refault_slope_moderate;	/* default 10 */
+	uint64_t		refault_slope_urgent;	/* default 100 */
+
 	void (*log_fn)(int level, const char *fmt, ...);
 };
 

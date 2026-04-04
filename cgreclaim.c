@@ -91,6 +91,9 @@ struct cgr_ctx *cgr_init(const struct cgr_config *cfg)
 
 	ctx->log_fn = cfg->log_fn;
 
+	ctx->refault_slope_moderate = 10;
+	ctx->refault_slope_urgent = 100;
+
 	pthread_rwlock_init(&ctx->lock, NULL);
 
 	cgr_log(ctx, CGR_LOG_INFO, "cgr_init: poll=%ums scan_root=%s",

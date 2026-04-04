@@ -8,6 +8,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 set(CGRECLAIM_SOURCES
     cgroup.c
     cgreclaim.c
+    cgr_config.c
     cgr_log.c
     monitor.c
 )

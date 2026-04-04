@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "cgreclaim_internal.h"
+#include "cgr_config.h"
 #include "cgroup.h"
 
 #include <errno.h>
@@ -23,25 +24,16 @@
 /* ---------- thrashing detection ---------- */
 
 /*
- * Refault slope thresholds (refaults per sample window).
- *
- * Each sample window = REFAULT_SAMPLE_INTERVAL × poll_interval_ms.
- * With defaults (5 × 1000ms = 5s), 1 unit here ≈ 0.2 refaults/sec.
- *
- * These values should be tuned empirically.
- */
-#define REFAULT_SLOPE_MODERATE_THRESHOLD	10	/* mild pressure */
-#define REFAULT_SLOPE_URGENT_THRESHOLD		100	/* severe pressure */
-
-/*
  * Classify refault pressure by computing the slope (delta refaults per
- * sample window) and comparing against thresholds.
+ * sample window) and comparing against runtime-tunable thresholds
+ * stored in ctx (loaded from /home/root/cgreclaim config file).
  *
  * IDLE     — no new refaults; working set fits within memory.high
  * MODERATE — slow growth; some pages are being re-faulted
  * URGENT   — rapid growth; working set significantly exceeds limit
  */
-static enum cgr_refault_urgency refault_urgency(const struct cgr_group *g)
+static enum cgr_refault_urgency refault_urgency(const struct cgr_ctx *ctx,
+						const struct cgr_group *g)
 {
 	uint64_t slope;
 
@@ -50,9 +42,9 @@ static enum cgr_refault_urgency refault_urgency(const struct cgr_group *g)
 
 	slope = g->refault - g->prev_refault;
 
-	if (slope >= REFAULT_SLOPE_URGENT_THRESHOLD)
+	if (slope >= ctx->refault_slope_urgent)
 		return CGR_REFAULT_URGENT;
-	if (slope >= REFAULT_SLOPE_MODERATE_THRESHOLD)
+	if (slope >= ctx->refault_slope_moderate)
 		return CGR_REFAULT_MODERATE;
 
 	return CGR_REFAULT_IDLE;
@@ -116,7 +108,7 @@ void cgr_adjust_limits(struct cgr_ctx *ctx)
 		if (!g->active)
 			continue;
 
-		urgency = refault_urgency(g);
+		urgency = refault_urgency(ctx, g);
 		slope = (g->refault > g->prev_refault)
 			? g->refault - g->prev_refault : 0;
 
@@ -210,10 +202,14 @@ static void poll_usage(struct cgr_ctx *ctx)
 	/*
 	 * Rescan outside the lock — cgr_scan_cgroups() calls
 	 * cgr_add_cgroup() which takes its own wrlock.
+	 * Also reload config file on the same interval.
 	 */
 	if (do_rescan) {
-		int found = cgr_scan_cgroups(ctx);
+		int found;
 
+		cgr_config_load(ctx);
+
+		found = cgr_scan_cgroups(ctx);
 		if (found > 0)
 			cgr_log(ctx, CGR_LOG_INFO,
 				"rescan: discovered %d new cgroup(s)", found);
