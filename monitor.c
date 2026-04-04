@@ -4,6 +4,7 @@
 #include "cgroup.h"
 
 #include <errno.h>
+#include <poll.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/inotify.h>
@@ -159,20 +160,13 @@ void cgr_adjust_limits(struct cgr_ctx *ctx)
 int cgr_scan_cgroups(struct cgr_ctx *ctx);
 int cgr_remove_cgroup(struct cgr_ctx *ctx, const char *path);
 
-static void poll_usage(struct cgr_ctx *ctx)
+/*
+ * Read memory.current for all active cgroups.
+ * Called with ctx->lock held for WRITE.
+ */
+static void read_usage(struct cgr_ctx *ctx)
 {
 	int i;
-	int do_refault_sample;
-
-	pthread_rwlock_wrlock(&ctx->lock);
-
-	ctx->poll_count++;
-	do_refault_sample = (ctx->poll_count >= REFAULT_SAMPLE_INTERVAL);
-
-	if (do_refault_sample) {
-		ctx->poll_count = 0;
-		sample_refault(ctx);
-	}
 
 	for (i = 0; i < ctx->groups_cap; i++) {
 		struct cgr_group *g = &ctx->groups[i];
@@ -184,23 +178,6 @@ static void poll_usage(struct cgr_ctx *ctx)
 		if (cg_read_uint64(g->path, "memory.current", &current) == 0)
 			g->usage = current;
 	}
-
-	/* Adjust limits only on refault sample boundaries */
-	if (do_refault_sample) {
-		cgr_log(ctx, CGR_LOG_DEBUG, "poll: refault sample, adjusting limits");
-		cgr_adjust_limits(ctx);
-	}
-
-	/* Periodically reload config file */
-	ctx->config_reload_count++;
-	if (ctx->config_reload_count >= CONFIG_RELOAD_INTERVAL) {
-		ctx->config_reload_count = 0;
-		pthread_rwlock_unlock(&ctx->lock);
-		cgr_config_load(ctx);
-		return;
-	}
-
-	pthread_rwlock_unlock(&ctx->lock);
 }
 
 /*
@@ -215,22 +192,21 @@ static int is_path_accessible(void)
 	return access(MOUNT_WAIT_PATH, R_OK | X_OK) == 0;
 }
 
-/*
- * inotify watcher thread — monitors scan_root for new cgroup
- * directories and registers them automatically via cgr_add_cgroup().
- * Event-driven; no polling overhead.
- */
-static void *inotify_thread(void *arg)
-{
-	struct cgr_ctx *ctx = arg;
-	int ifd, wd;
-	char buf[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
+/* ---------- inotify helpers ---------- */
 
-	ifd = inotify_init1(IN_CLOEXEC);
+/*
+ * Set up inotify watch on scan_root.  Returns fd >= 0 on success, -1
+ * on failure.  Called once from monitor_thread after initial scan.
+ */
+static int setup_inotify(struct cgr_ctx *ctx)
+{
+	int ifd, wd;
+
+	ifd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
 	if (ifd < 0) {
 		cgr_log(ctx, CGR_LOG_ERR, "inotify: init failed: %s",
 			strerror(errno));
-		return NULL;
+		return -1;
 	}
 
 	wd = inotify_add_watch(ifd, ctx->scan_root,
@@ -240,23 +216,29 @@ static void *inotify_thread(void *arg)
 		cgr_log(ctx, CGR_LOG_ERR, "inotify: watch %s failed: %s",
 			ctx->scan_root, strerror(errno));
 		close(ifd);
-		return NULL;
+		return -1;
 	}
 
-	cgr_log(ctx, CGR_LOG_INFO, "inotify: watching %s",
-		ctx->scan_root);
+	cgr_log(ctx, CGR_LOG_INFO, "inotify: watching %s", ctx->scan_root);
+	return ifd;
+}
 
-	while (ctx->running) {
-		ssize_t len;
+/*
+ * Drain and process all pending inotify events.
+ * Called from the monitor loop when poll() signals readability.
+ */
+static void handle_inotify_events(struct cgr_ctx *ctx, int ifd)
+{
+	char buf[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
+	ssize_t len;
+
+	for (;;) {
 		const struct inotify_event *ev;
 		char *ptr;
 
 		len = read(ifd, buf, sizeof(buf));
-		if (len <= 0) {
-			if (errno == EINTR)
-				continue;
+		if (len <= 0)
 			break;
-		}
 
 		for (ptr = buf; ptr < buf + len;
 		     ptr += sizeof(*ev) + ev->len) {
@@ -285,17 +267,15 @@ static void *inotify_thread(void *arg)
 			}
 		}
 	}
-
-	inotify_rm_watch(ifd, wd);
-	close(ifd);
-	return NULL;
 }
+
+/* ---------- monitor main loop ---------- */
 
 static void *monitor_thread(void *arg)
 {
 	struct cgr_ctx *ctx = arg;
 	struct timespec ts;
-	unsigned int ms;
+	int ifd = -1;
 
 	/*
 	 * Wait for /home/root to become available before starting
@@ -320,26 +300,57 @@ static void *monitor_thread(void *arg)
 	if (ctx->scan_root[0])
 		cgr_scan_cgroups(ctx);
 
-	/* Start inotify watcher for live cgroup discovery */
-	if (ctx->scan_root[0]) {
-		int ret = pthread_create(&ctx->inotify_tid, NULL,
-					 inotify_thread, ctx);
-		if (ret != 0)
-			cgr_log(ctx, CGR_LOG_ERR,
-				"monitor: inotify thread failed: %s",
-				strerror(ret));
-		else
-			ctx->inotify_running = 1;
-	}
+	/* Set up inotify for live cgroup discovery */
+	if (ctx->scan_root[0])
+		ifd = setup_inotify(ctx);
 
+	/*
+	 * Main loop: use poll() to multiplex inotify events with the
+	 * periodic poll timer.  This replaces the separate inotify thread.
+	 */
 	while (ctx->running) {
-		poll_usage(ctx);
+		struct pollfd pfd;
+		int nfds = 0;
 
-		ms = ctx->cfg.poll_interval_ms;
-		ts.tv_sec = ms / 1000;
-		ts.tv_nsec = (ms % 1000) * 1000000L;
-		nanosleep(&ts, NULL);
+		if (ifd >= 0) {
+			pfd.fd = ifd;
+			pfd.events = POLLIN;
+			nfds = 1;
+		}
+
+		poll(nfds ? &pfd : NULL, nfds,
+		     (int)ctx->cfg.poll_interval_ms);
+
+		/* Process inotify events if any */
+		if (ifd >= 0 && nfds && (pfd.revents & POLLIN))
+			handle_inotify_events(ctx, ifd);
+
+		/* Read memory.current for all groups */
+		pthread_rwlock_wrlock(&ctx->lock);
+		read_usage(ctx);
+
+		/* Sample refaults and adjust limits periodically */
+		ctx->poll_count++;
+		if (ctx->poll_count >= REFAULT_SAMPLE_INTERVAL) {
+			ctx->poll_count = 0;
+			sample_refault(ctx);
+			cgr_log(ctx, CGR_LOG_DEBUG,
+				"poll: refault sample, adjusting limits");
+			cgr_adjust_limits(ctx);
+		}
+
+		pthread_rwlock_unlock(&ctx->lock);
+
+		/* Periodically reload config file (outside lock) */
+		ctx->config_reload_count++;
+		if (ctx->config_reload_count >= CONFIG_RELOAD_INTERVAL) {
+			ctx->config_reload_count = 0;
+			cgr_config_load(ctx);
+		}
 	}
+
+	if (ifd >= 0)
+		close(ifd);
 
 	return NULL;
 }
@@ -380,17 +391,6 @@ int cgr_stop(struct cgr_ctx *ctx)
 		return CGR_OK;
 
 	ctx->running = 0;
-
-	/*
-	 * The inotify thread may be blocked in read().
-	 * Cancel it so we don't hang on join.
-	 */
-	if (ctx->inotify_running) {
-		pthread_cancel(ctx->inotify_tid);
-		pthread_join(ctx->inotify_tid, NULL);
-		ctx->inotify_running = 0;
-	}
-
 	pthread_join(ctx->monitor_tid, NULL);
 
 	cgr_log(ctx, CGR_LOG_INFO, "monitor: stopped");

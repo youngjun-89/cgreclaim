@@ -36,9 +36,7 @@ struct cgr_ctx {
 
 	pthread_rwlock_t	lock;
 	pthread_t		monitor_tid;
-	pthread_t		inotify_tid;
 	volatile int		running;
-	int			inotify_running;
 	unsigned int		poll_count;	/* polls since last refault sample */
 	unsigned int		config_reload_count;
 
