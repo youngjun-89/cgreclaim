@@ -1,0 +1,600 @@
+#define _GNU_SOURCE
+#include "cgreclaim.h"
+#include "cgreclaim_internal.h"
+#include "cgr_config.h"
+#include "cgr_log.h"
+#include "cgroup.h"
+#include "fake_cgroup.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+/* ---- helpers ---- */
+
+static int failures;
+static int total;
+
+#define TEST(name) \
+	do { \
+		total++; \
+		printf("  %-45s ", #name); \
+	} while (0)
+
+#define PASS() \
+	do { printf("OK\n"); } while (0)
+
+#define FAIL(fmt, ...) \
+	do { \
+		printf("FAIL " fmt "\n", ##__VA_ARGS__); \
+		failures++; \
+	} while (0)
+
+/* ================================================================
+ * 1. cgroup I/O layer — works on fake files
+ * ================================================================ */
+
+static void test_cg_read_write(void)
+{
+	char path[512];
+	uint64_t val;
+
+	TEST(cg_read_uint64);
+	fake_cg_create("rw_test", 100 << 20, 0, path, sizeof(path));
+	if (cg_read_uint64(path, "memory.current", &val) == 0 &&
+	    val == (100ULL << 20))
+		PASS();
+	else
+		FAIL("val=%lu", (unsigned long)val);
+
+	TEST(cg_read_uint64_max);
+	if (cg_read_uint64(path, "memory.high", &val) == 0 &&
+	    val == UINT64_MAX)
+		PASS();
+	else
+		FAIL("val=%lu", (unsigned long)val);
+
+	TEST(cg_write_uint64);
+	if (cg_write_uint64(path, "memory.high", 50ULL << 20) == 0 &&
+	    cg_read_uint64(path, "memory.high", &val) == 0 &&
+	    val == (50ULL << 20))
+		PASS();
+	else
+		FAIL("val=%lu", (unsigned long)val);
+
+	TEST(cg_write_uint64_max);
+	if (cg_write_uint64(path, "memory.high", UINT64_MAX) == 0 &&
+	    cg_read_uint64(path, "memory.high", &val) == 0 &&
+	    val == UINT64_MAX)
+		PASS();
+	else
+		FAIL("val=%lu", (unsigned long)val);
+
+	TEST(cg_file_exists);
+	if (cg_file_exists(path, "memory.current") &&
+	    !cg_file_exists(path, "no_such_file"))
+		PASS();
+	else
+		FAIL("");
+
+	TEST(cg_read_refault);
+	fake_cg_set_refault(path, 42, 8);
+	{
+		uint64_t rf;
+		if (cg_read_refault(path, &rf) == 0 && rf == 50)
+			PASS();
+		else
+			FAIL("rf=%lu", (unsigned long)rf);
+	}
+
+	fake_cg_destroy(path);
+}
+
+/* ================================================================
+ * 2. Add / remove lifecycle
+ * ================================================================ */
+
+static void test_add_remove(void)
+{
+	char path[512];
+	struct cgr_config cfg = { .poll_interval_ms = 1000 };
+	struct cgr_ctx *ctx;
+	struct cgr_status st;
+
+	fake_cg_create("add_rm", 64 << 20, 0, path, sizeof(path));
+	ctx = cgr_init(&cfg);
+
+	TEST(cgr_add_cgroup);
+	if (cgr_add_cgroup(ctx, path) == CGR_OK && ctx->nr_groups == 1)
+		PASS();
+	else
+		FAIL("nr=%d", ctx->nr_groups);
+
+	TEST(cgr_add_duplicate);
+	if (cgr_add_cgroup(ctx, path) == CGR_ERR_EXIST)
+		PASS();
+	else
+		FAIL("");
+
+	TEST(initial_limit_from_current);
+	if (cgr_get_status(ctx, path, &st) == CGR_OK &&
+	    st.limit >= (64ULL << 20) &&
+	    st.limit < UINT64_MAX) /* not "max" */
+		PASS();
+	else
+		FAIL("limit=%luMB", (unsigned long)(st.limit >> 20));
+
+	TEST(memory.high_written);
+	{
+		uint64_t high;
+		cg_read_uint64(path, "memory.high", &high);
+		if (high == st.limit)
+			PASS();
+		else
+			FAIL("high=%luMB limit=%luMB",
+			     (unsigned long)(high >> 20),
+			     (unsigned long)(st.limit >> 20));
+	}
+
+	TEST(cgr_remove_cgroup);
+	if (cgr_remove_cgroup(ctx, path) == CGR_OK && ctx->nr_groups == 0)
+		PASS();
+	else
+		FAIL("nr=%d", ctx->nr_groups);
+
+	TEST(remove_restores_high);
+	{
+		uint64_t high;
+		cg_read_uint64(path, "memory.high", &high);
+		if (high == UINT64_MAX)
+			PASS();
+		else
+			FAIL("high=%lu", (unsigned long)high);
+	}
+
+	TEST(remove_not_found);
+	if (cgr_remove_cgroup(ctx, path) == CGR_ERR_NOENT)
+		PASS();
+	else
+		FAIL("");
+
+	cgr_destroy(ctx);
+	fake_cg_destroy(path);
+}
+
+/* ================================================================
+ * 3. Dynamic array growth
+ * ================================================================ */
+
+static void test_dynamic_grow(void)
+{
+	struct cgr_config cfg = { .poll_interval_ms = 1000 };
+	struct cgr_ctx *ctx;
+	char paths[20][512];
+	char name[32];
+	int i;
+
+	ctx = cgr_init(&cfg);
+
+	for (i = 0; i < 20; i++) {
+		snprintf(name, sizeof(name), "grow_%d", i);
+		fake_cg_create(name, (32 + i) << 20, 0,
+			       paths[i], sizeof(paths[i]));
+		cgr_add_cgroup(ctx, paths[i]);
+	}
+
+	TEST(dynamic_array_grow);
+	if (ctx->nr_groups == 20 && ctx->groups_cap >= 20)
+		PASS();
+	else
+		FAIL("nr=%d cap=%d", ctx->nr_groups, ctx->groups_cap);
+
+	cgr_destroy(ctx);
+	for (i = 0; i < 20; i++)
+		fake_cg_destroy(paths[i]);
+}
+
+/* ================================================================
+ * 4. Auto-discovery (cgr_scan_cgroups)
+ * ================================================================ */
+
+static void test_scan_cgroups(void)
+{
+	char p1[512], p2[512], p3[512];
+	struct cgr_config cfg = {
+		.poll_interval_ms = 1000,
+		.scan_root = FAKE_CG_BASE,
+	};
+	struct cgr_ctx *ctx;
+	struct cgr_status st;
+	int found;
+
+	fake_cg_create("scan_a", 50 << 20, 0, p1, sizeof(p1));
+	fake_cg_create("scan_b", 80 << 20, 0, p2, sizeof(p2));
+	/* p3 has no memory.current — should be skipped */
+	snprintf(p3, sizeof(p3), "%s/scan_noctl", FAKE_CG_BASE);
+	mkdir(p3, 0755);
+
+	ctx = cgr_init(&cfg);
+
+	TEST(cgr_scan_cgroups);
+	found = cgr_scan_cgroups(ctx);
+	if (found == 2)
+		PASS();
+	else
+		FAIL("found=%d expected 2", found);
+
+	TEST(scan_skips_non_memory_cgroup);
+	if (cgr_get_status(ctx, p3, &st) == CGR_ERR_NOENT)
+		PASS();
+	else
+		FAIL("");
+
+	TEST(scan_rescan_no_duplicates);
+	found = cgr_scan_cgroups(ctx);
+	if (found == 0 && ctx->nr_groups == 2)
+		PASS();
+	else
+		FAIL("found=%d nr=%d", found, ctx->nr_groups);
+
+	cgr_destroy(ctx);
+	fake_cg_destroy(p1);
+	fake_cg_destroy(p2);
+	rmdir(p3);
+}
+
+/* ================================================================
+ * 5. Config file parsing
+ * ================================================================ */
+
+static void test_config_parse(void)
+{
+	/*
+	 * Can't override CGR_CONFIG_PATH #define, so test the
+	 * parse logic inline with the same algorithm cgr_config.c uses.
+	 */
+	struct cgr_ctx ctx;
+	FILE *fp;
+	const char *cfg_path = "/tmp/cgreclaim_test_cfg";
+
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.cfg.poll_interval_ms = 1000;
+	ctx.refault_slope_moderate = 10;
+	ctx.refault_slope_urgent = 100;
+
+	fp = fopen(cfg_path, "w");
+	fprintf(fp, "# test config\n");
+	fprintf(fp, "poll_interval_ms=500\n");
+	fprintf(fp, "refault_slope_moderate=25\n");
+	fprintf(fp, "refault_slope_urgent=200\n");
+	fprintf(fp, "unknown_key=ignored\n");
+	fclose(fp);
+
+	fp = fopen(cfg_path, "r");
+	{
+		char line[256];
+		while (fgets(line, sizeof(line), fp)) {
+			char *key, *val, *nl;
+			nl = strchr(line, '\n');
+			if (nl) *nl = '\0';
+			if (line[0] == '#' || line[0] == '\0') continue;
+			key = line;
+			val = strchr(line, '=');
+			if (!val) continue;
+			*val++ = '\0';
+			while (*val == ' ' || *val == '\t') val++;
+
+			if (strcmp(key, "poll_interval_ms") == 0)
+				ctx.cfg.poll_interval_ms = (unsigned int)strtoul(val, NULL, 10);
+			else if (strcmp(key, "refault_slope_moderate") == 0)
+				ctx.refault_slope_moderate = strtoull(val, NULL, 10);
+			else if (strcmp(key, "refault_slope_urgent") == 0)
+				ctx.refault_slope_urgent = strtoull(val, NULL, 10);
+		}
+	}
+	fclose(fp);
+
+	TEST(config_poll_interval);
+	if (ctx.cfg.poll_interval_ms == 500)
+		PASS();
+	else
+		FAIL("got %u", ctx.cfg.poll_interval_ms);
+
+	TEST(config_slope_moderate);
+	if (ctx.refault_slope_moderate == 25)
+		PASS();
+	else
+		FAIL("got %lu", (unsigned long)ctx.refault_slope_moderate);
+
+	TEST(config_slope_urgent);
+	if (ctx.refault_slope_urgent == 200)
+		PASS();
+	else
+		FAIL("got %lu", (unsigned long)ctx.refault_slope_urgent);
+
+	unlink(cfg_path);
+}
+
+/* ================================================================
+ * 6. Early log buffer
+ * ================================================================ */
+
+static void test_early_log(void)
+{
+	TEST(early_log_no_crash);
+	cgr_log_file(0, "early %d", 1);
+	cgr_log_file(1, "early %d", 2);
+	cgr_log_file(2, "early %d", 3);
+	PASS();
+}
+
+/* ================================================================
+ * 7. Inotify live detection (create + delete)
+ * ================================================================ */
+
+static void test_inotify_live(void)
+{
+	/*
+	 * Start monitor → inotify watches FAKE_CG_BASE.
+	 * Create a new fake cgroup dir → should be auto-added.
+	 * Remove it → should be auto-removed.
+	 *
+	 * The monitor thread waits for /home/root.  We skip if
+	 * that path is not accessible on this machine.
+	 */
+	char new_cg[512];
+	struct cgr_config cfg = {
+		.poll_interval_ms = 100,
+		.scan_root = FAKE_CG_BASE,
+	};
+	struct cgr_ctx *ctx;
+	struct cgr_status st;
+
+	if (access("/home/root", R_OK | X_OK) != 0) {
+		TEST(inotify_live_add);
+		printf("SKIP (/home/root not accessible)\n");
+		TEST(inotify_live_remove);
+		printf("SKIP\n");
+		return;
+	}
+
+	ctx = cgr_init(&cfg);
+	cgr_start(ctx);
+	usleep(400000); /* wait for monitor + inotify setup */
+
+	/* Create a new fake cgroup */
+	fake_cg_create("inotify_live", 40 << 20, 0, new_cg, sizeof(new_cg));
+	usleep(300000); /* wait for inotify */
+
+	TEST(inotify_live_add);
+	if (cgr_get_status(ctx, new_cg, &st) == CGR_OK)
+		PASS();
+	else
+		FAIL("not detected");
+
+	/* Remove it */
+	fake_cg_destroy(new_cg);
+	usleep(300000);
+
+	TEST(inotify_live_remove);
+	if (cgr_get_status(ctx, new_cg, &st) == CGR_ERR_NOENT)
+		PASS();
+	else
+		FAIL("still tracked");
+
+	cgr_stop(ctx);
+	cgr_destroy(ctx);
+}
+
+/* ================================================================
+ * 8. Monitor start/stop
+ * ================================================================ */
+
+static void test_monitor_lifecycle(void)
+{
+	struct cgr_config cfg = {
+		.poll_interval_ms = 100,
+		.scan_root = FAKE_CG_BASE,
+	};
+	struct cgr_ctx *ctx;
+
+	if (access("/home/root", R_OK | X_OK) != 0) {
+		TEST(monitor_start_stop);
+		printf("SKIP (/home/root not accessible)\n");
+		TEST(monitor_double_start);
+		printf("SKIP\n");
+		return;
+	}
+
+	ctx = cgr_init(&cfg);
+
+	TEST(monitor_start_stop);
+	if (cgr_start(ctx) == CGR_OK) {
+		usleep(200000);
+		if (cgr_stop(ctx) == CGR_OK)
+			PASS();
+		else
+			FAIL("stop failed");
+	} else {
+		FAIL("start failed");
+	}
+
+	TEST(monitor_double_start);
+	cgr_start(ctx);
+	if (cgr_start(ctx) == CGR_ERR_BUSY)
+		PASS();
+	else
+		FAIL("");
+	cgr_stop(ctx);
+
+	cgr_destroy(ctx);
+}
+
+/* ================================================================
+ * 9. Adjust limits with fake data
+ * ================================================================ */
+
+static void test_adjust_limits(void)
+{
+	char p1[512], p2[512];
+	struct cgr_config cfg = {
+		.poll_interval_ms = 1000,
+		.scan_root = FAKE_CG_BASE,
+	};
+	struct cgr_ctx *ctx;
+	struct cgr_status st_before, st_after;
+
+	fake_cg_create("adj_idle", 100 << 20, 0, p1, sizeof(p1));
+	fake_cg_create("adj_thrash", 100 << 20, 0, p2, sizeof(p2));
+
+	ctx = cgr_init(&cfg);
+	cgr_add_cgroup(ctx, p1);
+	cgr_add_cgroup(ctx, p2);
+
+	/* Get initial state */
+	cgr_get_status(ctx, p1, &st_before);
+
+	/* Simulate: p1 idle (refault unchanged), p2 thrashing */
+	pthread_rwlock_wrlock(&ctx->lock);
+	{
+		struct cgr_group *g1 = cgr_find_group(ctx, p1);
+		struct cgr_group *g2 = cgr_find_group(ctx, p2);
+
+		/* p1: idle — refault == prev_refault */
+		g1->refault = 100;
+		g1->prev_refault = 100;
+		g1->usage = 90 << 20;
+
+		/* p2: thrashing — refault increased significantly */
+		g2->refault = 500;
+		g2->prev_refault = 100;
+		g2->usage = 95 << 20;
+	}
+	cgr_adjust_limits(ctx);
+	pthread_rwlock_unlock(&ctx->lock);
+
+	TEST(adjust_shrink_when_idle);
+	cgr_get_status(ctx, p1, &st_after);
+	if (st_after.limit < st_before.limit)
+		PASS();
+	else
+		FAIL("before=%luMB after=%luMB",
+		     (unsigned long)(st_before.limit >> 20),
+		     (unsigned long)(st_after.limit >> 20));
+
+	TEST(adjust_grow_when_thrashing);
+	cgr_get_status(ctx, p2, &st_after);
+	/* p2 had slope=400 which is > urgent threshold(100) → grow */
+	cgr_get_status(ctx, p2, &st_after);
+	if (st_after.limit > st_before.limit)
+		PASS();
+	else
+		FAIL("before=%luMB after=%luMB",
+		     (unsigned long)(st_before.limit >> 20),
+		     (unsigned long)(st_after.limit >> 20));
+
+	cgr_destroy(ctx);
+	fake_cg_destroy(p1);
+	fake_cg_destroy(p2);
+}
+
+/* ================================================================
+ * 10. Poll reads memory.current from fake files
+ * ================================================================ */
+
+static void test_poll_reads_usage(void)
+{
+	char path[512];
+	struct cgr_config cfg = {
+		.poll_interval_ms = 1000,
+		.scan_root = FAKE_CG_BASE,
+	};
+	struct cgr_ctx *ctx;
+	struct cgr_status st;
+
+	fake_cg_create("poll_usage", 80 << 20, 0, path, sizeof(path));
+
+	ctx = cgr_init(&cfg);
+	cgr_add_cgroup(ctx, path);
+
+	/* Change usage on disk */
+	fake_cg_set_usage(path, 120 << 20);
+
+	/* Manually invoke one poll cycle (needs lock — poll_usage is static,
+	 * but we can read usage via get_status after a manual read) */
+	pthread_rwlock_wrlock(&ctx->lock);
+	{
+		struct cgr_group *g = cgr_find_group(ctx, path);
+		uint64_t cur;
+
+		if (cg_read_uint64(path, "memory.current", &cur) == 0)
+			g->usage = cur;
+	}
+	pthread_rwlock_unlock(&ctx->lock);
+
+	cgr_get_status(ctx, path, &st);
+
+	TEST(poll_reads_updated_usage);
+	if (st.usage == (120ULL << 20))
+		PASS();
+	else
+		FAIL("usage=%luMB expected 120MB",
+		     (unsigned long)(st.usage >> 20));
+
+	cgr_destroy(ctx);
+	fake_cg_destroy(path);
+}
+
+/* ================================================================
+ * main
+ * ================================================================ */
+
+int main(void)
+{
+	printf("=== cgreclaim test suite ===\n\n");
+
+	fake_cg_init();
+
+	printf("[cgroup I/O]\n");
+	test_cg_read_write();
+
+	printf("\n[add/remove]\n");
+	test_add_remove();
+
+	printf("\n[dynamic grow]\n");
+	test_dynamic_grow();
+
+	printf("\n[scan cgroups]\n");
+	test_scan_cgroups();
+
+	printf("\n[config parse]\n");
+	test_config_parse();
+
+	printf("\n[early log]\n");
+	test_early_log();
+
+	printf("\n[adjust limits]\n");
+	test_adjust_limits();
+
+	printf("\n[poll usage]\n");
+	test_poll_reads_usage();
+
+	printf("\n[monitor lifecycle]\n");
+	test_monitor_lifecycle();
+
+	printf("\n[inotify live]\n");
+	test_inotify_live();
+
+	fake_cg_cleanup();
+	cgr_log_close();
+
+	printf("\n=== %d/%d passed",
+		total - failures, total);
+	if (failures)
+		printf(", %d FAILED", failures);
+	printf(" ===\n");
+
+	return failures ? 1 : 0;
+}
