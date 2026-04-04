@@ -14,6 +14,12 @@
  */
 #define REFAULT_SAMPLE_INTERVAL	5
 
+/*
+ * Rescan interval: how often (in polls) to rescan scan_root for
+ * newly appeared cgroups.  With default 1s poll this is ~30 seconds.
+ */
+#define RESCAN_INTERVAL		30
+
 /* ---------- thrashing detection ---------- */
 
 /*
@@ -153,10 +159,17 @@ void cgr_adjust_limits(struct cgr_ctx *ctx)
 
 /* ---------- monitor thread ---------- */
 
+/*
+ * Forward declaration — defined in cgreclaim.c.
+ * Rescans scan_root for new cgroups; already-registered ones are skipped.
+ */
+int cgr_scan_cgroups(struct cgr_ctx *ctx);
+
 static void poll_usage(struct cgr_ctx *ctx)
 {
 	int i;
 	int do_refault_sample;
+	int do_rescan;
 
 	pthread_rwlock_wrlock(&ctx->lock);
 
@@ -167,6 +180,12 @@ static void poll_usage(struct cgr_ctx *ctx)
 		ctx->poll_count = 0;
 		sample_refault(ctx);
 	}
+
+	/* Periodically rescan for newly appeared cgroups */
+	ctx->rescan_count++;
+	do_rescan = (ctx->rescan_count >= RESCAN_INTERVAL && ctx->scan_root[0]);
+	if (do_rescan)
+		ctx->rescan_count = 0;
 
 	for (i = 0; i < ctx->groups_cap; i++) {
 		struct cgr_group *g = &ctx->groups[i];
@@ -187,6 +206,18 @@ static void poll_usage(struct cgr_ctx *ctx)
 	}
 
 	pthread_rwlock_unlock(&ctx->lock);
+
+	/*
+	 * Rescan outside the lock — cgr_scan_cgroups() calls
+	 * cgr_add_cgroup() which takes its own wrlock.
+	 */
+	if (do_rescan) {
+		int found = cgr_scan_cgroups(ctx);
+
+		if (found > 0)
+			cgr_log(ctx, CGR_LOG_INFO,
+				"rescan: discovered %d new cgroup(s)", found);
+	}
 }
 
 static void *monitor_thread(void *arg)

@@ -38,6 +38,7 @@ struct cgr_ctx {
 	pthread_t		monitor_tid;
 	volatile int		running;
 	unsigned int		poll_count;	/* polls since last refault sample */
+	unsigned int		rescan_count;	/* polls since last cgroup rescan */
 
 	void (*log_fn)(int level, const char *fmt, ...);
 };
