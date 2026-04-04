@@ -118,7 +118,7 @@ void cgr_destroy(struct cgr_ctx *ctx)
 int cgr_add_cgroup(struct cgr_ctx *ctx, const char *path)
 {
 	struct cgr_group *g;
-	uint64_t current_max;
+	uint64_t current_usage, initial_high;
 
 	if (!ctx || !path)
 		return CGR_ERR_INVAL;
@@ -136,13 +136,23 @@ int cgr_add_cgroup(struct cgr_ctx *ctx, const char *path)
 		return CGR_ERR_NOMEM;
 	}
 
-	/* Read current memory.high — keep it as-is */
-	if (cg_read_uint64(path, "memory.high", &current_max) < 0)
-		current_max = UINT64_MAX;
+	/*
+	 * Start from current usage + 10% headroom rather than
+	 * keeping whatever memory.high was (often "max").
+	 * The adaptive loop will grow/shrink from here.
+	 */
+	if (cg_read_uint64(path, "memory.current", &current_usage) < 0)
+		current_usage = CGR_MIN_LIMIT_BYTES;
+
+	initial_high = (uint64_t)(current_usage * 1.10);
+	if (initial_high < CGR_MIN_LIMIT_BYTES)
+		initial_high = CGR_MIN_LIMIT_BYTES;
+
+	cg_write_uint64(path, "memory.high", initial_high);
 
 	snprintf(g->path, sizeof(g->path), "%s", path);
-	g->limit = current_max;
-	g->usage = 0;
+	g->limit = initial_high;
+	g->usage = current_usage;
 	g->refault = 0;
 	g->prev_refault = 0;
 	g->is_foreground = 0;
@@ -150,8 +160,9 @@ int cgr_add_cgroup(struct cgr_ctx *ctx, const char *path)
 	g->active = 1;
 	ctx->nr_groups++;
 
-	cgr_log(ctx, CGR_LOG_INFO, "add_cgroup: %s limit=%lu nr_groups=%d",
-		path, (unsigned long)(current_max >> 20), ctx->nr_groups);
+	cgr_log(ctx, CGR_LOG_INFO, "add_cgroup: %s usage=%luMB high=%luMB nr_groups=%d",
+		path, (unsigned long)(current_usage >> 20),
+		(unsigned long)(initial_high >> 20), ctx->nr_groups);
 
 	pthread_rwlock_unlock(&ctx->lock);
 
