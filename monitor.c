@@ -6,8 +6,12 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+
+/* Directory that must be mounted before config/log are available */
+#define MOUNT_WAIT_PATH	"/home/root"
 
 /*
  * Refault sampling interval: check memory.stat every N polls
@@ -216,11 +220,40 @@ static void poll_usage(struct cgr_ctx *ctx)
 	}
 }
 
+static int is_mount_ready(void)
+{
+	struct stat st;
+
+	return stat(MOUNT_WAIT_PATH, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
 static void *monitor_thread(void *arg)
 {
 	struct cgr_ctx *ctx = arg;
 	struct timespec ts;
 	unsigned int ms;
+
+	/*
+	 * Wait for /home/root to become available before starting
+	 * the adjustment loop.  Config file and log file live there.
+	 * Logs generated before mount are buffered and flushed later.
+	 */
+	cgr_log(ctx, CGR_LOG_INFO, "monitor: waiting for %s", MOUNT_WAIT_PATH);
+	while (ctx->running && !is_mount_ready()) {
+		ts.tv_sec = 1;
+		ts.tv_nsec = 0;
+		nanosleep(&ts, NULL);
+	}
+
+	if (ctx->running) {
+		cgr_log(ctx, CGR_LOG_INFO, "monitor: %s available, loading config",
+			MOUNT_WAIT_PATH);
+		cgr_config_load(ctx);
+
+		/* Initial scan after config is loaded */
+		if (ctx->scan_root[0])
+			cgr_scan_cgroups(ctx);
+	}
 
 	while (ctx->running) {
 		poll_usage(ctx);
