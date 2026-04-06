@@ -1,6 +1,10 @@
 #ifndef CGROUP_H
 #define CGROUP_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdint.h>
 
 /*
@@ -27,5 +31,9 @@ int cg_file_exists(const char *cg_path, const char *key);
  * Returns 0 on success, -1 on error.
  */
 int cg_read_refault(const char *cg_path, uint64_t *refault);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* CGROUP_H */

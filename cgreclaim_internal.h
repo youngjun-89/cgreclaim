@@ -1,6 +1,10 @@
 #ifndef CGRECLAIM_INTERNAL_H
 #define CGRECLAIM_INTERNAL_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "cgreclaim.h"
 #include <pthread.h>
 
@@ -57,5 +61,9 @@ struct cgr_ctx {
 /* Internal helpers shared between cgreclaim.c and monitor.c */
 struct cgr_group *cgr_find_group(struct cgr_ctx *ctx, const char *path);
 void cgr_adjust_limits(struct cgr_ctx *ctx);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* CGRECLAIM_INTERNAL_H */

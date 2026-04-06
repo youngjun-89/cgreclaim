@@ -1,6 +1,10 @@
 #ifndef CGRECLAIM_H
 #define CGRECLAIM_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdarg.h>
 #include <stdint.h>
 
@@ -94,5 +98,9 @@ int cgr_get_status(struct cgr_ctx *ctx, const char *path, struct cgr_status *out
  * Utility — get system total RAM in bytes
  */
 uint64_t cgr_get_total_ram(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* CGRECLAIM_H */

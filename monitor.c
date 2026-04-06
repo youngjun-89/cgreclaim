@@ -269,6 +269,64 @@ static void handle_inotify_events(struct cgr_ctx *ctx, int ifd)
 	}
 }
 
+/* ---------- settle phase ---------- */
+
+/*
+ * Wait a fixed period for processes to reach steady state, then set
+ * memory.high = memory.current for all cgroups as the initial baseline.
+ * The adaptive loop must not start until this baseline is established.
+ */
+#define SETTLE_WAIT_SEC	10
+
+static void settle_and_baseline(struct cgr_ctx *ctx)
+{
+	struct timespec ts;
+	int i;
+
+	if (ctx->nr_groups == 0)
+		return;
+
+	cgr_log(ctx, CGR_LOG_INFO,
+		"settle: waiting %ds for memory usage to stabilize",
+		SETTLE_WAIT_SEC);
+
+	ts.tv_sec = SETTLE_WAIT_SEC;
+	ts.tv_nsec = 0;
+	nanosleep(&ts, NULL);
+
+	if (!ctx->running)
+		return;
+
+	/* Set memory.high = memory.current for all groups */
+	pthread_rwlock_wrlock(&ctx->lock);
+	read_usage(ctx);
+
+	for (i = 0; i < ctx->groups_cap; i++) {
+		struct cgr_group *g = &ctx->groups[i];
+		uint64_t baseline;
+
+		if (!g->active)
+			continue;
+
+		baseline = g->usage;
+		if (baseline < CGR_MIN_LIMIT_BYTES)
+			baseline = CGR_MIN_LIMIT_BYTES;
+
+		g->limit = baseline;
+		cg_write_uint64(g->path, "memory.high", baseline);
+
+		cgr_log(ctx, CGR_LOG_INFO,
+			"settle: %s memory.high=%luMB (current=%luMB)",
+			g->path,
+			(unsigned long)(baseline >> 20),
+			(unsigned long)(g->usage >> 20));
+	}
+
+	pthread_rwlock_unlock(&ctx->lock);
+
+	cgr_log(ctx, CGR_LOG_INFO, "settle: baseline set, starting monitor loop");
+}
+
 /* ---------- monitor main loop ---------- */
 
 static void *monitor_thread(void *arg)
@@ -303,6 +361,12 @@ static void *monitor_thread(void *arg)
 	/* Set up inotify for live cgroup discovery */
 	if (ctx->scan_root[0])
 		ifd = setup_inotify(ctx);
+
+	/*
+	 * Settle: wait for system to boot up, then set
+	 * memory.high = memory.current as the initial baseline.
+	 */
+	settle_and_baseline(ctx);
 
 	/*
 	 * Main loop: use poll() to multiplex inotify events with the

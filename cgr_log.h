@@ -1,6 +1,10 @@
 #ifndef CGR_LOG_H
 #define CGR_LOG_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "cgreclaim.h"
 
 /*
@@ -27,5 +31,9 @@ void cgr_log_close(void);
 
 /* Log callback compatible with cgr_config.log_fn */
 void cgr_log_file(int level, const char *fmt, ...);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* CGR_LOG_H */

@@ -1,6 +1,10 @@
 #ifndef CGR_CONFIG_H
 #define CGR_CONFIG_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "cgreclaim_internal.h"
 
 /*
@@ -25,5 +29,9 @@
  * Returns 0 on success (or file not found), -1 on parse error.
  */
 int cgr_config_load(struct cgr_ctx *ctx);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* CGR_CONFIG_H */
