@@ -1,0 +1,23 @@
+# cgreclaim runtime configuration
+#
+# Place this file at /home/root/cgreclaim on the target board.
+# Format: key=value, one per line. Lines starting with '#' are comments.
+# Unknown keys are silently ignored.
+#
+# The monitor reloads this file every ~30 seconds — no restart needed.
+# If the file is missing, built-in defaults are used.
+
+# Polling interval in milliseconds (default: 1000)
+#poll_interval_ms=1000
+
+# Refault slope thresholds for urgency classification.
+# The monitor samples refaults every 5 seconds and computes a slope.
+#   slope < moderate  → IDLE      (no adjustment)
+#   moderate ≤ slope < urgent → MODERATE (gentle shrink)
+#   slope ≥ urgent    → URGENT   (aggressive shrink)
+
+# Refault slope for MODERATE urgency (default: 10)
+#refault_slope_moderate=10
+
+# Refault slope for URGENT urgency (default: 100)
+#refault_slope_urgent=100
