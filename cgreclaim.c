@@ -212,40 +212,57 @@ static int is_memory_cgroup(const char *path)
 	return cg_file_exists(path, "memory.current");
 }
 
-int cgr_scan_cgroups(struct cgr_ctx *ctx)
+/*
+ * Recursively scan dir for memory cgroups.  Adds each discovered cgroup
+ * and descends into it.  dir itself is NOT added (caller's responsibility).
+ *
+ * In cgroup v2 the memory controller must be enabled in a parent before any
+ * child can use it, so a directory without memory.current will never contain
+ * memory-enabled descendants — safe to prune early.
+ */
+static int scan_dir_recursive(struct cgr_ctx *ctx, const char *dir)
 {
-	DIR *dir;
+	DIR *d;
 	struct dirent *de;
-	char child_path[512];
+	char child[512];
 	struct stat st;
 	int found = 0;
+
+	d = opendir(dir);
+	if (!d)
+		return 0;
+
+	while ((de = readdir(d)) != NULL) {
+		if (de->d_name[0] == '.')
+			continue;
+
+		snprintf(child, sizeof(child), "%s/%s", dir, de->d_name);
+
+		if (stat(child, &st) < 0 || !S_ISDIR(st.st_mode))
+			continue;
+
+		if (!is_memory_cgroup(child))
+			continue;
+
+		if (cgr_add_cgroup(ctx, child) == CGR_OK)
+			found++;
+
+		/* Descend regardless: subtree may have more tracked children */
+		found += scan_dir_recursive(ctx, child);
+	}
+
+	closedir(d);
+	return found;
+}
+
+int cgr_scan_cgroups(struct cgr_ctx *ctx)
+{
+	int found;
 
 	if (!ctx || !ctx->scan_root[0])
 		return CGR_ERR_INVAL;
 
-	dir = opendir(ctx->scan_root);
-	if (!dir)
-		return CGR_ERR_IO;
-
-	/* Discover and index child cgroups, preserving their current limits */
-	while ((de = readdir(dir)) != NULL) {
-		if (de->d_name[0] == '.')
-			continue;
-
-		snprintf(child_path, sizeof(child_path), "%s/%s",
-			 ctx->scan_root, de->d_name);
-
-		if (stat(child_path, &st) < 0 || !S_ISDIR(st.st_mode))
-			continue;
-
-		if (!is_memory_cgroup(child_path))
-			continue;
-
-		if (cgr_add_cgroup(ctx, child_path) == CGR_OK)
-			found++;
-	}
-
-	closedir(dir);
+	found = scan_dir_recursive(ctx, ctx->scan_root);
 
 	cgr_log(ctx, CGR_LOG_INFO, "scan_cgroups: found %d under %s",
 		found, ctx->scan_root);
