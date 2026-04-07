@@ -3,11 +3,14 @@
 #include "cgr_config.h"
 #include "cgroup.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <poll.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/inotify.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -192,42 +195,215 @@ static int is_path_accessible(void)
 	return access(MOUNT_WAIT_PATH, R_OK | X_OK) == 0;
 }
 
+/* ---------- inotify watch table ---------- */
+
+/*
+ * Each watched directory gets an entry in the watch table so that
+ * inotify events can be mapped back to an absolute path.  The table
+ * grows dynamically like the groups array.
+ */
+#define WATCH_CAP_INIT	32
+
+struct watch_entry {
+	int  wd;
+	char path[256];	/* same bound as cgr_group.path */
+};
+
+struct inotify_state {
+	int		     ifd;
+	struct watch_entry  *entries;
+	int		     nr;
+	int		     cap;
+};
+
+static void inotify_state_init(struct inotify_state *is)
+{
+	memset(is, 0, sizeof(*is));
+	is->ifd = -1;
+}
+
+static void inotify_state_free(struct inotify_state *is)
+{
+	if (is->ifd >= 0)
+		close(is->ifd);
+	free(is->entries);
+	memset(is, 0, sizeof(*is));
+	is->ifd = -1;
+}
+
+/* Add an inotify watch on path and record the wd→path mapping. */
+static int inotify_add_dir(struct cgr_ctx *ctx, struct inotify_state *is,
+			   const char *path)
+{
+	struct watch_entry *e, *new_entries;
+	int i, wd, new_cap;
+
+	/* Skip if already watched */
+	for (i = 0; i < is->nr; i++) {
+		if (strcmp(is->entries[i].path, path) == 0)
+			return 0;
+	}
+
+	wd = inotify_add_watch(is->ifd, path,
+			       IN_CREATE | IN_MOVED_TO |
+			       IN_DELETE | IN_MOVED_FROM | IN_ONLYDIR);
+	if (wd < 0) {
+		cgr_log(ctx, CGR_LOG_ERR, "inotify: watch %s failed: %s",
+			path, strerror(errno));
+		return -1;
+	}
+
+	if (is->nr == is->cap) {
+		new_cap = is->cap ? is->cap * 2 : WATCH_CAP_INIT;
+		new_entries = realloc(is->entries,
+				      new_cap * sizeof(*new_entries));
+		if (!new_entries) {
+			inotify_rm_watch(is->ifd, wd);
+			return -1;
+		}
+		is->entries = new_entries;
+		is->cap     = new_cap;
+	}
+
+	e = &is->entries[is->nr++];
+	e->wd = wd;
+	snprintf(e->path, sizeof(e->path), "%s", path);
+
+	cgr_log(ctx, CGR_LOG_DEBUG, "inotify: watch added %s (wd=%d)", path, wd);
+	return 0;
+}
+
+/* Return the path associated with wd, or NULL if not found. */
+static const char *inotify_path_for_wd(const struct inotify_state *is, int wd)
+{
+	int i;
+
+	for (i = 0; i < is->nr; i++) {
+		if (is->entries[i].wd == wd)
+			return is->entries[i].path;
+	}
+	return NULL;
+}
+
+/*
+ * Remove the watch table entry for wd.
+ * Called when IN_IGNORED arrives (the kernel already dropped the watch).
+ */
+static void inotify_cleanup_wd(struct inotify_state *is, int wd)
+{
+	int i;
+
+	for (i = 0; i < is->nr; i++) {
+		if (is->entries[i].wd == wd) {
+			is->entries[i] = is->entries[is->nr - 1];
+			is->nr--;
+			return;
+		}
+	}
+}
+
+/*
+ * Explicitly remove the watch for path (used for IN_MOVED_FROM where the
+ * directory still exists at the new location so the kernel does not
+ * auto-remove the watch).  inotify_rm_watch triggers IN_IGNORED which
+ * will call inotify_cleanup_wd.
+ */
+static void inotify_cleanup_path(struct inotify_state *is, const char *path)
+{
+	int i;
+
+	for (i = 0; i < is->nr; i++) {
+		if (strcmp(is->entries[i].path, path) == 0) {
+			inotify_rm_watch(is->ifd, is->entries[i].wd);
+			return;
+		}
+	}
+}
+
 /* ---------- inotify helpers ---------- */
 
 /*
- * Set up inotify watch on scan_root.  Returns fd >= 0 on success, -1
- * on failure.  Called once from monitor_thread after initial scan.
+ * Set up inotify on scan_root and add watches for every cgroup that was
+ * already discovered during the initial scan.  Returns 0 on success.
  */
-static int setup_inotify(struct cgr_ctx *ctx)
+static int setup_inotify(struct cgr_ctx *ctx, struct inotify_state *is)
 {
-	int ifd, wd;
+	int i;
 
-	ifd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
-	if (ifd < 0) {
+	is->ifd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+	if (is->ifd < 0) {
 		cgr_log(ctx, CGR_LOG_ERR, "inotify: init failed: %s",
 			strerror(errno));
 		return -1;
 	}
 
-	wd = inotify_add_watch(ifd, ctx->scan_root,
-			       IN_CREATE | IN_MOVED_TO |
-			       IN_DELETE | IN_MOVED_FROM | IN_ONLYDIR);
-	if (wd < 0) {
-		cgr_log(ctx, CGR_LOG_ERR, "inotify: watch %s failed: %s",
-			ctx->scan_root, strerror(errno));
-		close(ifd);
+	/* Always watch the scan root itself */
+	if (inotify_add_dir(ctx, is, ctx->scan_root) < 0) {
+		close(is->ifd);
+		is->ifd = -1;
 		return -1;
 	}
 
-	cgr_log(ctx, CGR_LOG_INFO, "inotify: watching %s", ctx->scan_root);
-	return ifd;
+	/* Watch every cgroup subtree discovered during the initial scan */
+	pthread_rwlock_rdlock(&ctx->lock);
+	for (i = 0; i < ctx->groups_cap; i++) {
+		if (ctx->groups[i].active)
+			inotify_add_dir(ctx, is, ctx->groups[i].path);
+	}
+	pthread_rwlock_unlock(&ctx->lock);
+
+	cgr_log(ctx, CGR_LOG_INFO,
+		"inotify: watching %s (recursive, %d dirs)",
+		ctx->scan_root, is->nr);
+	return 0;
+}
+
+/*
+ * Recursively scan the children of dir for memory cgroups that appeared
+ * after inotify started watching (e.g. a whole subtree moved in via rename).
+ * Adds each found cgroup and adds an inotify watch so future events are
+ * caught.  dir itself must already be added by the caller.
+ */
+static void scan_and_watch_subtree(struct cgr_ctx *ctx,
+				   struct inotify_state *is,
+				   const char *dir)
+{
+	DIR *d;
+	struct dirent *de;
+	char child[512];
+	struct stat st;
+
+	d = opendir(dir);
+	if (!d)
+		return;
+
+	while ((de = readdir(d)) != NULL) {
+		if (de->d_name[0] == '.')
+			continue;
+
+		snprintf(child, sizeof(child), "%s/%s", dir, de->d_name);
+
+		if (stat(child, &st) < 0 || !S_ISDIR(st.st_mode))
+			continue;
+
+		if (!cg_file_exists(child, "memory.current"))
+			continue;
+
+		if (cgr_add_cgroup(ctx, child) == CGR_OK)
+			cgr_log(ctx, CGR_LOG_INFO, "inotify: added %s", child);
+
+		inotify_add_dir(ctx, is, child);
+		scan_and_watch_subtree(ctx, is, child);
+	}
+
+	closedir(d);
 }
 
 /*
  * Drain and process all pending inotify events.
  * Called from the monitor loop when poll() signals readability.
  */
-static void handle_inotify_events(struct cgr_ctx *ctx, int ifd)
+static void handle_inotify_events(struct cgr_ctx *ctx, struct inotify_state *is)
 {
 	char buf[4096] __attribute__((aligned(__alignof__(struct inotify_event))));
 	ssize_t len;
@@ -236,34 +412,64 @@ static void handle_inotify_events(struct cgr_ctx *ctx, int ifd)
 		const struct inotify_event *ev;
 		char *ptr;
 
-		len = read(ifd, buf, sizeof(buf));
+		len = read(is->ifd, buf, sizeof(buf));
 		if (len <= 0)
 			break;
 
 		for (ptr = buf; ptr < buf + len;
 		     ptr += sizeof(*ev) + ev->len) {
 			char child_path[512];
+			const char *parent;
 
 			ev = (const struct inotify_event *)ptr;
+
+			/*
+			 * IN_IGNORED fires when a watch is removed — either
+			 * because we called inotify_rm_watch() or because the
+			 * watched directory was deleted.  Clean up the table.
+			 */
+			if (ev->mask & IN_IGNORED) {
+				inotify_cleanup_wd(is, ev->wd);
+				continue;
+			}
 
 			if (!(ev->mask & IN_ISDIR))
 				continue;
 			if (!ev->len || ev->name[0] == '.')
 				continue;
 
+			parent = inotify_path_for_wd(is, ev->wd);
+			if (!parent)
+				continue;
+
 			snprintf(child_path, sizeof(child_path), "%s/%s",
-				 ctx->scan_root, ev->name);
+				 parent, ev->name);
 
 			if (ev->mask & (IN_CREATE | IN_MOVED_TO)) {
+				if (!cg_file_exists(child_path, "memory.current"))
+					continue;
 				if (cgr_add_cgroup(ctx, child_path) == CGR_OK)
 					cgr_log(ctx, CGR_LOG_INFO,
 						"inotify: added %s",
 						child_path);
+				/*
+				 * Watch the new directory so its own children
+				 * generate events, then scan for any subtree
+				 * that was moved in atomically (IN_MOVED_TO).
+				 */
+				inotify_add_dir(ctx, is, child_path);
+				scan_and_watch_subtree(ctx, is, child_path);
 			} else if (ev->mask & (IN_DELETE | IN_MOVED_FROM)) {
 				if (cgr_remove_cgroup(ctx, child_path) == CGR_OK)
 					cgr_log(ctx, CGR_LOG_INFO,
 						"inotify: removed %s",
 						child_path);
+				/*
+				 * For IN_DELETE the kernel already removed the
+				 * watch; for IN_MOVED_FROM the dir still exists
+				 * elsewhere so we must drop it explicitly.
+				 */
+				inotify_cleanup_path(is, child_path);
 			}
 		}
 	}
@@ -332,8 +538,10 @@ static void settle_and_baseline(struct cgr_ctx *ctx)
 static void *monitor_thread(void *arg)
 {
 	struct cgr_ctx *ctx = arg;
+	struct inotify_state istate;
 	struct timespec ts;
-	int ifd = -1;
+
+	inotify_state_init(&istate);
 
 	/*
 	 * Wait for /home/root to become available before starting
@@ -358,9 +566,12 @@ static void *monitor_thread(void *arg)
 	if (ctx->scan_root[0])
 		cgr_scan_cgroups(ctx);
 
-	/* Set up inotify for live cgroup discovery */
+	/*
+	 * Set up inotify watches on scan_root and every already-discovered
+	 * cgroup directory so new subdirectories at any depth are caught.
+	 */
 	if (ctx->scan_root[0])
-		ifd = setup_inotify(ctx);
+		setup_inotify(ctx, &istate);
 
 	/*
 	 * Settle: wait for system to boot up, then set
@@ -376,18 +587,18 @@ static void *monitor_thread(void *arg)
 		struct pollfd pfd;
 		int nfds = 0;
 
-		if (ifd >= 0) {
-			pfd.fd = ifd;
+		if (istate.ifd >= 0) {
+			pfd.fd     = istate.ifd;
 			pfd.events = POLLIN;
-			nfds = 1;
+			nfds       = 1;
 		}
 
 		poll(nfds ? &pfd : NULL, nfds,
 		     (int)ctx->cfg.poll_interval_ms);
 
 		/* Process inotify events if any */
-		if (ifd >= 0 && nfds && (pfd.revents & POLLIN))
-			handle_inotify_events(ctx, ifd);
+		if (istate.ifd >= 0 && nfds && (pfd.revents & POLLIN))
+			handle_inotify_events(ctx, &istate);
 
 		/* Read memory.current for all groups */
 		pthread_rwlock_wrlock(&ctx->lock);
@@ -413,8 +624,7 @@ static void *monitor_thread(void *arg)
 		}
 	}
 
-	if (ifd >= 0)
-		close(ifd);
+	inotify_state_free(&istate);
 
 	return NULL;
 }
