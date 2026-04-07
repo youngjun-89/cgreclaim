@@ -31,6 +31,16 @@ int fake_cg_init(void);
 char *fake_cg_create(const char *name, unsigned long initial_usage_bytes,
 		     unsigned long initial_refault, char *out_path, int pathsz);
 
+/*
+ * Create a fake cgroup under an arbitrary parent directory (not necessarily
+ * FAKE_CG_BASE).  Useful for building nested hierarchies in tests.
+ * Returns full path in out_path, or NULL on error.
+ */
+char *fake_cg_create_under(const char *parent, const char *name,
+			   unsigned long initial_usage_bytes,
+			   unsigned long initial_refault,
+			   char *out_path, int pathsz);
+
 /* Update memory.current value for a fake cgroup */
 int fake_cg_set_usage(const char *path, unsigned long bytes);
 

@@ -197,7 +197,7 @@ static void test_dynamic_grow(void)
 }
 
 /* ================================================================
- * 4. Auto-discovery (cgr_scan_cgroups)
+ * 4. Auto-discovery (cgr_scan_cgroups) — flat
  * ================================================================ */
 
 static void test_scan_cgroups(void)
@@ -243,6 +243,70 @@ static void test_scan_cgroups(void)
 	fake_cg_destroy(p1);
 	fake_cg_destroy(p2);
 	rmdir(p3);
+}
+
+/* ================================================================
+ * 4b. Auto-discovery — recursive (nested cgroups)
+ * ================================================================ */
+
+static void test_scan_cgroups_recursive(void)
+{
+	/*
+	 * Layout:
+	 *   FAKE_CG_BASE/rec_top/         <- memory cgroup (level 1)
+	 *   FAKE_CG_BASE/rec_top/rec_mid/ <- memory cgroup (level 2)
+	 *   FAKE_CG_BASE/rec_top/rec_mid/rec_leaf/ <- memory cgroup (level 3)
+	 *   FAKE_CG_BASE/rec_flat/        <- memory cgroup (level 1, no children)
+	 *
+	 * cgr_scan_cgroups must discover all four.
+	 */
+	char p_top[512], p_mid[512], p_leaf[512], p_flat[512];
+	struct cgr_config cfg = {
+		.poll_interval_ms = 1000,
+		.scan_root = FAKE_CG_BASE,
+	};
+	struct cgr_ctx *ctx;
+	struct cgr_status st;
+	int found;
+
+	fake_cg_create("rec_top", 60 << 20, 0, p_top, sizeof(p_top));
+	fake_cg_create_under(p_top, "rec_mid", 30 << 20, 0,
+			     p_mid, sizeof(p_mid));
+	fake_cg_create_under(p_mid, "rec_leaf", 10 << 20, 0,
+			     p_leaf, sizeof(p_leaf));
+	fake_cg_create("rec_flat", 80 << 20, 0, p_flat, sizeof(p_flat));
+
+	ctx = cgr_init(&cfg);
+
+	TEST(scan_recursive_finds_all_levels);
+	found = cgr_scan_cgroups(ctx);
+	if (found == 4)
+		PASS();
+	else
+		FAIL("found=%d expected 4", found);
+
+	TEST(scan_recursive_tracks_leaf);
+	if (cgr_get_status(ctx, p_leaf, &st) == CGR_OK)
+		PASS();
+	else
+		FAIL("leaf not tracked");
+
+	TEST(scan_recursive_tracks_mid);
+	if (cgr_get_status(ctx, p_mid, &st) == CGR_OK)
+		PASS();
+	else
+		FAIL("mid not tracked");
+
+	TEST(scan_recursive_no_duplicates);
+	found = cgr_scan_cgroups(ctx);
+	if (found == 0 && ctx->nr_groups == 4)
+		PASS();
+	else
+		FAIL("found=%d nr=%d", found, ctx->nr_groups);
+
+	cgr_destroy(ctx);
+	fake_cg_destroy(p_top); /* removes p_top and its entire subtree */
+	fake_cg_destroy(p_flat);
 }
 
 /* ================================================================
@@ -389,8 +453,78 @@ static void test_inotify_live(void)
 }
 
 /* ================================================================
- * 8. Monitor start/stop
+ * 7b. Inotify recursive detection (nested create + delete)
  * ================================================================ */
+
+static void test_inotify_recursive(void)
+{
+	/*
+	 * Start monitor → scans FAKE_CG_BASE, sets up recursive watches.
+	 * Create irec_top → auto-added, watch added on it.
+	 * Create irec_top/irec_child → caught by watch on irec_top, auto-added.
+	 * Remove irec_top/irec_child → auto-removed.
+	 * Remove irec_top → auto-removed.
+	 */
+	char top[512], child[512];
+	struct cgr_config cfg = {
+		.poll_interval_ms = 100,
+		.scan_root = FAKE_CG_BASE,
+	};
+	struct cgr_ctx *ctx;
+	struct cgr_status st;
+
+	if (access("/home/root", R_OK | X_OK) != 0) {
+		TEST(inotify_recursive_child_add);
+		printf("SKIP (/home/root not accessible)\n");
+		TEST(inotify_recursive_child_remove);
+		printf("SKIP\n");
+		TEST(inotify_recursive_top_remove);
+		printf("SKIP\n");
+		return;
+	}
+
+	ctx = cgr_init(&cfg);
+	cgr_start(ctx);
+	usleep(400000); /* wait for monitor + inotify setup */
+
+	/* Create top-level cgroup — inotify sees it on scan_root watch */
+	fake_cg_create("irec_top", 50 << 20, 0, top, sizeof(top));
+	usleep(300000);
+
+	/* Create nested child — inotify sees it on irec_top watch */
+	fake_cg_create_under(top, "irec_child", 20 << 20, 0,
+			     child, sizeof(child));
+	usleep(300000);
+
+	TEST(inotify_recursive_child_add);
+	if (cgr_get_status(ctx, child, &st) == CGR_OK)
+		PASS();
+	else
+		FAIL("nested child not detected");
+
+	/* Remove child first (cgroup v2: must empty before parent) */
+	fake_cg_destroy(child);
+	usleep(300000);
+
+	TEST(inotify_recursive_child_remove);
+	if (cgr_get_status(ctx, child, &st) == CGR_ERR_NOENT)
+		PASS();
+	else
+		FAIL("nested child still tracked");
+
+	/* Remove top */
+	fake_cg_destroy(top);
+	usleep(300000);
+
+	TEST(inotify_recursive_top_remove);
+	if (cgr_get_status(ctx, top, &st) == CGR_ERR_NOENT)
+		PASS();
+	else
+		FAIL("top still tracked");
+
+	cgr_stop(ctx);
+	cgr_destroy(ctx);
+}
 
 static void test_monitor_lifecycle(void)
 {
@@ -569,6 +703,9 @@ int main(void)
 	printf("\n[scan cgroups]\n");
 	test_scan_cgroups();
 
+	printf("\n[scan cgroups recursive]\n");
+	test_scan_cgroups_recursive();
+
 	printf("\n[config parse]\n");
 	test_config_parse();
 
@@ -586,6 +723,9 @@ int main(void)
 
 	printf("\n[inotify live]\n");
 	test_inotify_live();
+
+	printf("\n[inotify recursive]\n");
+	test_inotify_recursive();
 
 	fake_cg_cleanup();
 	cgr_log_close();

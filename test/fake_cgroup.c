@@ -32,9 +32,19 @@ int fake_cg_init(void)
 char *fake_cg_create(const char *name, unsigned long initial_usage_bytes,
 		     unsigned long initial_refault, char *out_path, int pathsz)
 {
+	snprintf(out_path, pathsz, "%s/%s", FAKE_CG_BASE, name);
+	return fake_cg_create_under(FAKE_CG_BASE, name, initial_usage_bytes,
+				    initial_refault, out_path, pathsz);
+}
+
+char *fake_cg_create_under(const char *parent, const char *name,
+			   unsigned long initial_usage_bytes,
+			   unsigned long initial_refault,
+			   char *out_path, int pathsz)
+{
 	char stat_buf[512];
 
-	snprintf(out_path, pathsz, "%s/%s", FAKE_CG_BASE, name);
+	snprintf(out_path, pathsz, "%s/%s", parent, name);
 
 	if (mkdir(out_path, 0755) < 0 && errno != EEXIST)
 		return NULL;
