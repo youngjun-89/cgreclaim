@@ -18,6 +18,11 @@ add_library(cgreclaim STATIC ${CGRECLAIM_SOURCES})
 target_include_directories(cgreclaim PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(cgreclaim PRIVATE pthread)
 
+# cgrd — cgreclaim daemon binary
+add_executable(cgrd cgrd.c)
+target_link_libraries(cgrd PRIVATE cgreclaim pthread)
+target_include_directories(cgrd PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
 # Test suite (standalone build only)
 if(CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
     add_executable(test_cgreclaim
