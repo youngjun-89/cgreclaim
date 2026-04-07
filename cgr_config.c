@@ -89,6 +89,14 @@ int cgr_config_load(struct cgr_ctx *ctx)
 					"config: min_limit_mb=%lu",
 					(unsigned long)v);
 			}
+		} else if (strcmp(key, "limit_usage_ratio") == 0) {
+			uint32_t v = (uint32_t)strtoul(val, NULL, 10);
+
+			if (v > 0) {
+				ctx->limit_usage_ratio = v;
+				cgr_log(ctx, CGR_LOG_INFO,
+					"config: limit_usage_ratio=%u", v);
+			}
 		}
 		/* Unknown keys silently ignored */
 	}

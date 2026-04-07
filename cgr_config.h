@@ -21,6 +21,7 @@ extern "C" {
  *   refault_slope_moderate — refault slope for MODERATE urgency (default 10)
  *   refault_slope_urgent   — refault slope for URGENT urgency  (default 100)
  *   min_limit_mb           — minimum memory.high per cgroup in MB (default 16)
+ *   limit_usage_ratio      — don't grow memory.high if limit >= usage * ratio (default 2)
  */
 
 #define CGR_CONFIG_PATH	"/home/root/cgreclaim"

@@ -329,6 +329,7 @@ static void test_config_parse(void)
 	ctx.refault_slope_moderate = 10;
 	ctx.refault_slope_urgent = 100;
 	ctx.min_limit = CGR_MIN_LIMIT_BYTES;
+	ctx.limit_usage_ratio = 2;
 
 	fp = fopen(cfg_path, "w");
 	fprintf(fp, "# test config\n");
@@ -337,6 +338,7 @@ static void test_config_parse(void)
 	fprintf(fp, "refault_slope_moderate=25\n");
 	fprintf(fp, "refault_slope_urgent=200\n");
 	fprintf(fp, "min_limit_mb=8\n");
+	fprintf(fp, "limit_usage_ratio=3\n");
 	fprintf(fp, "unknown_key=ignored\n");
 	fclose(fp);
 
@@ -364,6 +366,8 @@ static void test_config_parse(void)
 				ctx.refault_slope_urgent = strtoull(val, NULL, 10);
 			else if (strcmp(key, "min_limit_mb") == 0)
 				ctx.min_limit = strtoull(val, NULL, 10) << 20;
+			else if (strcmp(key, "limit_usage_ratio") == 0)
+				ctx.limit_usage_ratio = (uint32_t)strtoul(val, NULL, 10);
 		}
 	}
 	fclose(fp);
@@ -397,6 +401,12 @@ static void test_config_parse(void)
 		PASS();
 	else
 		FAIL("got %luMB", (unsigned long)(ctx.min_limit >> 20));
+
+	TEST(config_limit_usage_ratio);
+	if (ctx.limit_usage_ratio == 3)
+		PASS();
+	else
+		FAIL("got %u", ctx.limit_usage_ratio);
 
 	unlink(cfg_path);
 }
@@ -654,6 +664,67 @@ static void test_adjust_limits(void)
 	fake_cg_destroy(p2);
 }
 
+static void test_limit_usage_ratio(void)
+{
+	char p1[512], p2[512];
+	struct cgr_config cfg = {
+		.poll_interval_ms = 1000,
+		.scan_root = FAKE_CG_BASE,
+	};
+	struct cgr_ctx *ctx;
+	struct cgr_status st_before, st_after;
+
+	fake_cg_create("ratio_capped", 100 << 20, 0, p1, sizeof(p1));
+	fake_cg_create("ratio_allowed", 100 << 20, 0, p2, sizeof(p2));
+
+	ctx = cgr_init(&cfg);  /* limit_usage_ratio defaults to 2 */
+	cgr_add_cgroup(ctx, p1);
+	cgr_add_cgroup(ctx, p2);
+
+	/*
+	 * p1: URGENT refault but limit already >= usage * 2 → grow blocked
+	 * p2: URGENT refault and limit < usage * 2 → grow allowed
+	 */
+	pthread_rwlock_wrlock(&ctx->lock);
+	{
+		struct cgr_group *g1 = cgr_find_group(ctx, p1);
+		struct cgr_group *g2 = cgr_find_group(ctx, p2);
+
+		/* p1: limit = 200MB, usage = 50MB → 200 >= 50*2 → capped */
+		g1->limit  = 200ULL << 20;
+		g1->usage  = 50ULL << 20;
+		g1->refault = 500;
+		g1->prev_refault = 100; /* slope=400, URGENT */
+
+		/* p2: limit = 90MB, usage = 80MB → 90 < 80*2 → allowed */
+		g2->limit  = 90ULL << 20;
+		g2->usage  = 80ULL << 20;
+		g2->refault = 500;
+		g2->prev_refault = 100; /* slope=400, URGENT */
+	}
+	cgr_get_status(ctx, p1, &st_before);
+	cgr_adjust_limits(ctx);
+	pthread_rwlock_unlock(&ctx->lock);
+
+	TEST(ratio_cap_blocks_grow);
+	cgr_get_status(ctx, p1, &st_after);
+	if (st_after.limit == 200ULL << 20)
+		PASS();
+	else
+		FAIL("expected 200MB, got %luMB", (unsigned long)(st_after.limit >> 20));
+
+	TEST(ratio_cap_allows_grow_when_under);
+	cgr_get_status(ctx, p2, &st_after);
+	if (st_after.limit > 90ULL << 20)
+		PASS();
+	else
+		FAIL("expected >90MB, got %luMB", (unsigned long)(st_after.limit >> 20));
+
+	cgr_destroy(ctx);
+	fake_cg_destroy(p1);
+	fake_cg_destroy(p2);
+}
+
 static void test_min_limit(void)
 {
 	char p1[512];
@@ -830,6 +901,9 @@ int main(void)
 
 	printf("\n[adjust limits]\n");
 	test_adjust_limits();
+
+	printf("\n[limit usage ratio]\n");
+	test_limit_usage_ratio();
 
 	printf("\n[min limit]\n");
 	test_min_limit();

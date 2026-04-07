@@ -116,11 +116,31 @@ void cgr_adjust_limits(struct cgr_ctx *ctx)
 
 		switch (urgency) {
 		case CGR_REFAULT_URGENT:
+			if (ctx->limit_usage_ratio > 0 && g->usage > 0 &&
+			    g->limit >= g->usage * (uint64_t)ctx->limit_usage_ratio) {
+				cgr_log(ctx, CGR_LOG_DEBUG,
+					"adjust: %s [URGENT capped] limit=%luMB >= usage=%luMB * %u",
+					g->path,
+					(unsigned long)(g->limit >> 20),
+					(unsigned long)(g->usage >> 20),
+					ctx->limit_usage_ratio);
+				continue;
+			}
 			new_limit = (uint64_t)(g->limit * GROW_FACTOR_URGENT);
 			if (new_limit == g->limit)
 				new_limit = g->limit + ctx->min_limit;
 			break;
 		case CGR_REFAULT_MODERATE:
+			if (ctx->limit_usage_ratio > 0 && g->usage > 0 &&
+			    g->limit >= g->usage * (uint64_t)ctx->limit_usage_ratio) {
+				cgr_log(ctx, CGR_LOG_DEBUG,
+					"adjust: %s [MODERATE capped] limit=%luMB >= usage=%luMB * %u",
+					g->path,
+					(unsigned long)(g->limit >> 20),
+					(unsigned long)(g->usage >> 20),
+					ctx->limit_usage_ratio);
+				continue;
+			}
 			new_limit = (uint64_t)(g->limit * GROW_FACTOR_MODERATE);
 			if (new_limit == g->limit)
 				new_limit = g->limit + ctx->min_limit;
