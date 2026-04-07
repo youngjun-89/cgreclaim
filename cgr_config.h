@@ -16,7 +16,8 @@ extern "C" {
  * are comments.  Unknown keys are silently ignored.
  *
  * Supported keys:
- *   poll_interval_ms       — polling interval in milliseconds (default 1000)
+ *   poll_interval_ms       — inotify event poll timeout in ms (default 1000)
+ *   refault_interval_ms    — refault sample + memory.high adjust period in ms (default 1000)
  *   refault_slope_moderate — refault slope for MODERATE urgency (default 10)
  *   refault_slope_urgent   — refault slope for URGENT urgency  (default 100)
  */

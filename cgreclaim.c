@@ -85,6 +85,8 @@ struct cgr_ctx *cgr_init(const struct cgr_config *cfg)
 	if (ctx->cfg.poll_interval_ms == 0)
 		ctx->cfg.poll_interval_ms = 1000;
 
+	if (ctx->cfg.refault_interval_ms == 0)
+		ctx->cfg.refault_interval_ms = 1000;
 	if (cfg->scan_root)
 		snprintf(ctx->scan_root, sizeof(ctx->scan_root),
 			 "%s", cfg->scan_root);

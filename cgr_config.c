@@ -54,6 +54,14 @@ int cgr_config_load(struct cgr_ctx *ctx)
 				cgr_log(ctx, CGR_LOG_INFO,
 					"config: poll_interval_ms=%u", v);
 			}
+		} else if (strcmp(key, "refault_interval_ms") == 0) {
+			unsigned int v = (unsigned int)strtoul(val, NULL, 10);
+
+			if (v > 0) {
+				ctx->cfg.refault_interval_ms = v;
+				cgr_log(ctx, CGR_LOG_INFO,
+					"config: refault_interval_ms=%u", v);
+			}
 		} else if (strcmp(key, "refault_slope_moderate") == 0) {
 			uint64_t v = strtoull(val, NULL, 10);
 

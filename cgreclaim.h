@@ -42,7 +42,8 @@ struct cgr_status {
 
 /* Library configuration */
 struct cgr_config {
-	unsigned int	poll_interval_ms;	/* monitor polling interval (default: 1000) */
+	unsigned int	poll_interval_ms;	/* inotify event poll timeout (default: 1000) */
+	unsigned int	refault_interval_ms;	/* refault sample + limit adjust period (default: 1000) */
 
 	/*
 	 * Root cgroup path to scan for child cgroups.
