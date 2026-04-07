@@ -18,12 +18,6 @@
 #define MOUNT_WAIT_PATH	"/home/root"
 
 /*
- * Refault sampling interval: check memory.stat every N polls
- * to avoid per-poll overhead of parsing memory.stat.
- */
-#define REFAULT_SAMPLE_INTERVAL	5
-
-/*
  * Config reload interval: how often (in polls) to re-read the
  * runtime configuration file.  With default 1s poll this is ~30s.
  */
@@ -600,21 +594,19 @@ static void *monitor_thread(void *arg)
 		if (istate.ifd >= 0 && nfds && (pfd.revents & POLLIN))
 			handle_inotify_events(ctx, &istate);
 
-		/* Read memory.current for all groups */
-		pthread_rwlock_wrlock(&ctx->lock);
-		read_usage(ctx);
+		/* Sample refaults, read usage, and adjust limits periodically */
+		ctx->refault_elapsed_ms += ctx->cfg.poll_interval_ms;
+		if (ctx->refault_elapsed_ms >= ctx->cfg.refault_interval_ms) {
+			ctx->refault_elapsed_ms = 0;
 
-		/* Sample refaults and adjust limits periodically */
-		ctx->poll_count++;
-		if (ctx->poll_count >= REFAULT_SAMPLE_INTERVAL) {
-			ctx->poll_count = 0;
+			pthread_rwlock_wrlock(&ctx->lock);
+			read_usage(ctx);
 			sample_refault(ctx);
 			cgr_log(ctx, CGR_LOG_DEBUG,
-				"poll: refault sample, adjusting limits");
+				"refault: sample, adjusting limits");
 			cgr_adjust_limits(ctx);
+			pthread_rwlock_unlock(&ctx->lock);
 		}
-
-		pthread_rwlock_unlock(&ctx->lock);
 
 		/* Periodically reload config file (outside lock) */
 		ctx->config_reload_count++;
@@ -650,8 +642,9 @@ int cgr_start(struct cgr_ctx *ctx)
 		return CGR_ERR_IO;
 	}
 
-	cgr_log(ctx, CGR_LOG_INFO, "monitor: started (poll_interval=%ums)",
-		ctx->cfg.poll_interval_ms);
+	cgr_log(ctx, CGR_LOG_INFO,
+		"monitor: started (poll_interval=%ums refault_interval=%ums)",
+		ctx->cfg.poll_interval_ms, ctx->cfg.refault_interval_ms);
 
 	return CGR_OK;
 }
