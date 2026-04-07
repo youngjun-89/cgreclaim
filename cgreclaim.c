@@ -95,6 +95,7 @@ struct cgr_ctx *cgr_init(const struct cgr_config *cfg)
 
 	ctx->refault_slope_moderate = 10;
 	ctx->refault_slope_urgent = 100;
+	ctx->min_limit = CGR_MIN_LIMIT_BYTES;
 
 	pthread_rwlock_init(&ctx->lock, NULL);
 
@@ -147,11 +148,11 @@ int cgr_add_cgroup(struct cgr_ctx *ctx, const char *path)
 	 * The adaptive loop will grow/shrink from here.
 	 */
 	if (cg_read_uint64(path, "memory.current", &current_usage) < 0)
-		current_usage = CGR_MIN_LIMIT_BYTES;
+		current_usage = ctx->min_limit;
 
 	initial_high = (uint64_t)(current_usage * 1.10);
-	if (initial_high < CGR_MIN_LIMIT_BYTES)
-		initial_high = CGR_MIN_LIMIT_BYTES;
+	if (initial_high < ctx->min_limit)
+		initial_high = ctx->min_limit;
 
 	cg_write_uint64(path, "memory.high", initial_high);
 

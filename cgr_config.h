@@ -20,6 +20,7 @@ extern "C" {
  *   refault_interval_ms    — refault sample + memory.high adjust period in ms (default 1000)
  *   refault_slope_moderate — refault slope for MODERATE urgency (default 10)
  *   refault_slope_urgent   — refault slope for URGENT urgency  (default 100)
+ *   min_limit_mb           — minimum memory.high per cgroup in MB (default 16)
  */
 
 #define CGR_CONFIG_PATH	"/home/root/cgreclaim"

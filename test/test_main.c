@@ -328,6 +328,7 @@ static void test_config_parse(void)
 	ctx.cfg.refault_interval_ms = 1000;
 	ctx.refault_slope_moderate = 10;
 	ctx.refault_slope_urgent = 100;
+	ctx.min_limit = CGR_MIN_LIMIT_BYTES;
 
 	fp = fopen(cfg_path, "w");
 	fprintf(fp, "# test config\n");
@@ -335,6 +336,7 @@ static void test_config_parse(void)
 	fprintf(fp, "refault_interval_ms=3000\n");
 	fprintf(fp, "refault_slope_moderate=25\n");
 	fprintf(fp, "refault_slope_urgent=200\n");
+	fprintf(fp, "min_limit_mb=8\n");
 	fprintf(fp, "unknown_key=ignored\n");
 	fclose(fp);
 
@@ -360,6 +362,8 @@ static void test_config_parse(void)
 				ctx.refault_slope_moderate = strtoull(val, NULL, 10);
 			else if (strcmp(key, "refault_slope_urgent") == 0)
 				ctx.refault_slope_urgent = strtoull(val, NULL, 10);
+			else if (strcmp(key, "min_limit_mb") == 0)
+				ctx.min_limit = strtoull(val, NULL, 10) << 20;
 		}
 	}
 	fclose(fp);
@@ -387,6 +391,12 @@ static void test_config_parse(void)
 		PASS();
 	else
 		FAIL("got %lu", (unsigned long)ctx.refault_slope_urgent);
+
+	TEST(config_min_limit_mb);
+	if (ctx.min_limit == (8ULL << 20))
+		PASS();
+	else
+		FAIL("got %luMB", (unsigned long)(ctx.min_limit >> 20));
 
 	unlink(cfg_path);
 }
@@ -644,9 +654,74 @@ static void test_adjust_limits(void)
 	fake_cg_destroy(p2);
 }
 
-/* ================================================================
- * 10. Poll reads memory.current from fake files
- * ================================================================ */
+static void test_min_limit(void)
+{
+	char p1[512];
+	struct cgr_config cfg = {
+		.poll_interval_ms = 1000,
+		.scan_root = FAKE_CG_BASE,
+	};
+	struct cgr_ctx *ctx;
+	struct cgr_status st;
+
+	/* default min_limit should be CGR_MIN_LIMIT_BYTES (16MB) */
+	ctx = cgr_init(&cfg);
+	TEST(min_limit_default_16mb);
+	if (ctx->min_limit == CGR_MIN_LIMIT_BYTES)
+		PASS();
+	else
+		FAIL("got %luMB", (unsigned long)(ctx->min_limit >> 20));
+
+	/* IDLE shrink must not go below min_limit */
+	fake_cg_create("min_floor", 20 << 20, 0, p1, sizeof(p1));
+	cgr_add_cgroup(ctx, p1);
+
+	pthread_rwlock_wrlock(&ctx->lock);
+	{
+		struct cgr_group *g = cgr_find_group(ctx, p1);
+
+		g->limit = ctx->min_limit; /* already at floor */
+		g->refault = 50;
+		g->prev_refault = 50; /* IDLE */
+		g->usage = 5 << 20;
+	}
+	cgr_adjust_limits(ctx);
+	pthread_rwlock_unlock(&ctx->lock);
+
+	TEST(min_limit_floor_not_breached);
+	cgr_get_status(ctx, p1, &st);
+	if (st.limit >= ctx->min_limit)
+		PASS();
+	else
+		FAIL("limit=%luMB below min=%luMB",
+		     (unsigned long)(st.limit >> 20),
+		     (unsigned long)(ctx->min_limit >> 20));
+
+	/* custom min_limit via direct field assignment */
+	ctx->min_limit = 8ULL << 20;
+	pthread_rwlock_wrlock(&ctx->lock);
+	{
+		struct cgr_group *g = cgr_find_group(ctx, p1);
+
+		g->limit = 9ULL << 20; /* above new floor, IDLE → shrink */
+		g->refault = 50;
+		g->prev_refault = 50;
+		g->usage = 2 << 20;
+	}
+	cgr_adjust_limits(ctx);
+	pthread_rwlock_unlock(&ctx->lock);
+
+	TEST(min_limit_custom_floor_respected);
+	cgr_get_status(ctx, p1, &st);
+	if (st.limit >= (8ULL << 20))
+		PASS();
+	else
+		FAIL("limit=%luMB below custom min=8MB",
+		     (unsigned long)(st.limit >> 20));
+
+	cgr_destroy(ctx);
+	fake_cg_destroy(p1);
+}
 
 static void test_refault_interval_default(void)
 {
@@ -755,6 +830,9 @@ int main(void)
 
 	printf("\n[adjust limits]\n");
 	test_adjust_limits();
+
+	printf("\n[min limit]\n");
+	test_min_limit();
 
 	printf("\n[refault usage read]\n");
 	test_refault_reads_usage();

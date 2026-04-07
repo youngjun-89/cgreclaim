@@ -47,6 +47,7 @@ struct cgr_ctx {
 	/* Runtime-tunable thresholds (reloaded from config file) */
 	uint64_t		refault_slope_moderate;	/* default 10 */
 	uint64_t		refault_slope_urgent;	/* default 100 */
+	uint64_t		min_limit;		/* default CGR_MIN_LIMIT_BYTES (16MB) */
 
 	void (*log_fn)(int level, const char *fmt, ...);
 };

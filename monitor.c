@@ -118,20 +118,20 @@ void cgr_adjust_limits(struct cgr_ctx *ctx)
 		case CGR_REFAULT_URGENT:
 			new_limit = (uint64_t)(g->limit * GROW_FACTOR_URGENT);
 			if (new_limit == g->limit)
-				new_limit = g->limit + CGR_MIN_LIMIT_BYTES;
+				new_limit = g->limit + ctx->min_limit;
 			break;
 		case CGR_REFAULT_MODERATE:
 			new_limit = (uint64_t)(g->limit * GROW_FACTOR_MODERATE);
 			if (new_limit == g->limit)
-				new_limit = g->limit + CGR_MIN_LIMIT_BYTES;
+				new_limit = g->limit + ctx->min_limit;
 			break;
 		default: /* CGR_REFAULT_IDLE */
 			new_limit = (uint64_t)(g->limit * SHRINK_FACTOR);
 			break;
 		}
 
-		if (new_limit < CGR_MIN_LIMIT_BYTES)
-			new_limit = CGR_MIN_LIMIT_BYTES;
+		if (new_limit < ctx->min_limit)
+			new_limit = ctx->min_limit;
 
 		if (new_limit == g->limit)
 			continue;
@@ -509,8 +509,8 @@ static void settle_and_baseline(struct cgr_ctx *ctx)
 			continue;
 
 		baseline = g->usage;
-		if (baseline < CGR_MIN_LIMIT_BYTES)
-			baseline = CGR_MIN_LIMIT_BYTES;
+		if (baseline < ctx->min_limit)
+			baseline = ctx->min_limit;
 
 		g->limit = baseline;
 		cg_write_uint64(g->path, "memory.high", baseline);
@@ -703,8 +703,8 @@ int cgr_set_limit(struct cgr_ctx *ctx, const char *path, uint64_t new_limit)
 	if (!ctx || !path)
 		return CGR_ERR_INVAL;
 
-	if (new_limit < CGR_MIN_LIMIT_BYTES)
-		new_limit = CGR_MIN_LIMIT_BYTES;
+	if (new_limit < ctx->min_limit)
+		new_limit = ctx->min_limit;
 
 	pthread_rwlock_wrlock(&ctx->lock);
 

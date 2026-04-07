@@ -80,6 +80,15 @@ int cgr_config_load(struct cgr_ctx *ctx)
 					"config: refault_slope_urgent=%lu",
 					(unsigned long)v);
 			}
+		} else if (strcmp(key, "min_limit_mb") == 0) {
+			uint64_t v = strtoull(val, NULL, 10);
+
+			if (v > 0) {
+				ctx->min_limit = v << 20;
+				cgr_log(ctx, CGR_LOG_INFO,
+					"config: min_limit_mb=%lu",
+					(unsigned long)v);
+			}
 		}
 		/* Unknown keys silently ignored */
 	}

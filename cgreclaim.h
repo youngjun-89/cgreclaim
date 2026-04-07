@@ -8,8 +8,8 @@ extern "C" {
 #include <stdarg.h>
 #include <stdint.h>
 
-/* Minimum memory limit for any cgroup (32MB) */
-#define CGR_MIN_LIMIT_BYTES	(32ULL << 20)
+/* Default minimum memory limit for any cgroup (16MB); runtime-tunable via min_limit_mb */
+#define CGR_MIN_LIMIT_BYTES	(16ULL << 20)
 
 /* Log levels */
 enum cgr_log_level {
