@@ -325,12 +325,14 @@ static void test_config_parse(void)
 
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.cfg.poll_interval_ms = 1000;
+	ctx.cfg.refault_interval_ms = 1000;
 	ctx.refault_slope_moderate = 10;
 	ctx.refault_slope_urgent = 100;
 
 	fp = fopen(cfg_path, "w");
 	fprintf(fp, "# test config\n");
 	fprintf(fp, "poll_interval_ms=500\n");
+	fprintf(fp, "refault_interval_ms=3000\n");
 	fprintf(fp, "refault_slope_moderate=25\n");
 	fprintf(fp, "refault_slope_urgent=200\n");
 	fprintf(fp, "unknown_key=ignored\n");
@@ -352,6 +354,8 @@ static void test_config_parse(void)
 
 			if (strcmp(key, "poll_interval_ms") == 0)
 				ctx.cfg.poll_interval_ms = (unsigned int)strtoul(val, NULL, 10);
+			else if (strcmp(key, "refault_interval_ms") == 0)
+				ctx.cfg.refault_interval_ms = (unsigned int)strtoul(val, NULL, 10);
 			else if (strcmp(key, "refault_slope_moderate") == 0)
 				ctx.refault_slope_moderate = strtoull(val, NULL, 10);
 			else if (strcmp(key, "refault_slope_urgent") == 0)
@@ -365,6 +369,12 @@ static void test_config_parse(void)
 		PASS();
 	else
 		FAIL("got %u", ctx.cfg.poll_interval_ms);
+
+	TEST(config_refault_interval);
+	if (ctx.cfg.refault_interval_ms == 3000)
+		PASS();
+	else
+		FAIL("got %u", ctx.cfg.refault_interval_ms);
 
 	TEST(config_slope_moderate);
 	if (ctx.refault_slope_moderate == 25)
@@ -638,26 +648,54 @@ static void test_adjust_limits(void)
  * 10. Poll reads memory.current from fake files
  * ================================================================ */
 
-static void test_poll_reads_usage(void)
+static void test_refault_interval_default(void)
+{
+	struct cgr_config cfg = { .poll_interval_ms = 1000 }; /* refault_interval_ms = 0 → default */
+	struct cgr_ctx *ctx;
+
+	ctx = cgr_init(&cfg);
+
+	TEST(refault_interval_default_1000ms);
+	if (ctx->cfg.refault_interval_ms == 1000)
+		PASS();
+	else
+		FAIL("got %u", ctx->cfg.refault_interval_ms);
+
+	TEST(refault_interval_zero_rejected);
+	/* zero must be replaced with the default, not kept */
+	if (ctx->cfg.refault_interval_ms > 0)
+		PASS();
+	else
+		FAIL("refault_interval_ms is 0");
+
+	cgr_destroy(ctx);
+}
+
+/* ----------------------------------------------------------------
+ * read_usage() is called at refault-sample time, not every poll.
+ * Verify that g->usage reflects memory.current after a manual
+ * refault-cycle invocation.
+ * ---------------------------------------------------------------- */
+static void test_refault_reads_usage(void)
 {
 	char path[512];
 	struct cgr_config cfg = {
-		.poll_interval_ms = 1000,
+		.poll_interval_ms    = 1000,
+		.refault_interval_ms = 1000,
 		.scan_root = FAKE_CG_BASE,
 	};
 	struct cgr_ctx *ctx;
 	struct cgr_status st;
 
-	fake_cg_create("poll_usage", 80 << 20, 0, path, sizeof(path));
+	fake_cg_create("refault_usage", 80 << 20, 0, path, sizeof(path));
 
 	ctx = cgr_init(&cfg);
 	cgr_add_cgroup(ctx, path);
 
-	/* Change usage on disk */
+	/* Simulate usage change on disk */
 	fake_cg_set_usage(path, 120 << 20);
 
-	/* Manually invoke one poll cycle (needs lock — poll_usage is static,
-	 * but we can read usage via get_status after a manual read) */
+	/* Manually invoke what the refault cycle does */
 	pthread_rwlock_wrlock(&ctx->lock);
 	{
 		struct cgr_group *g = cgr_find_group(ctx, path);
@@ -670,7 +708,7 @@ static void test_poll_reads_usage(void)
 
 	cgr_get_status(ctx, path, &st);
 
-	TEST(poll_reads_updated_usage);
+	TEST(refault_reads_updated_usage);
 	if (st.usage == (120ULL << 20))
 		PASS();
 	else
@@ -709,14 +747,17 @@ int main(void)
 	printf("\n[config parse]\n");
 	test_config_parse();
 
+	printf("\n[refault interval defaults]\n");
+	test_refault_interval_default();
+
 	printf("\n[early log]\n");
 	test_early_log();
 
 	printf("\n[adjust limits]\n");
 	test_adjust_limits();
 
-	printf("\n[poll usage]\n");
-	test_poll_reads_usage();
+	printf("\n[refault usage read]\n");
+	test_refault_reads_usage();
 
 	printf("\n[monitor lifecycle]\n");
 	test_monitor_lifecycle();
