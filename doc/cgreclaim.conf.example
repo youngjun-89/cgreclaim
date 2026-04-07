@@ -1,23 +1,58 @@
-# cgreclaim runtime configuration
+# cgreclaim 런타임 설정 파일
 #
-# Place this file at /home/root/cgreclaim on the target board.
-# Format: key=value, one per line. Lines starting with '#' are comments.
-# Unknown keys are silently ignored.
+# 파일 위치: /home/root/cgreclaim  (보드 위)
+# 형식: key=value, 한 줄에 하나. '#'으로 시작하는 줄은 주석.
+# 모르는 키는 조용히 무시됨.
 #
-# The monitor reloads this file every ~30 seconds — no restart needed.
-# If the file is missing, built-in defaults are used.
+# 모니터가 약 30초마다 자동으로 재로드하므로 데몬 재시작 불필요.
+# 파일이 없으면 아래의 기본값이 그대로 사용됨.
 
-# Polling interval in milliseconds (default: 1000)
+# ─── 폴링 주기 ───────────────────────────────────────────────────
+
+# inotify 이벤트 폴 타임아웃 (밀리초, 기본값: 1000)
+# 낮추면 cgroup 추가/삭제 반응이 빨라지지만 CPU 사용이 소폭 증가.
 #poll_interval_ms=1000
 
-# Refault slope thresholds for urgency classification.
-# The monitor samples refaults every 5 seconds and computes a slope.
-#   slope < moderate  → IDLE      (no adjustment)
-#   moderate ≤ slope < urgent → MODERATE (gentle shrink)
-#   slope ≥ urgent    → URGENT   (aggressive shrink)
+# refault 샘플링 및 memory.high 조정 주기 (밀리초, 기본값: 1000)
+# poll_interval_ms와 독립적으로 설정 가능.
+#refault_interval_ms=1000
 
-# Refault slope for MODERATE urgency (default: 10)
+# ─── refault 기반 긴급도 판정 임계값 ────────────────────────────
+#
+# 매 5초마다 memory.stat에서 refault 카운터를 읽어 delta(slope)를 계산.
+#
+#   slope == 0          → IDLE     : memory.high × 0.95  (-5% 축소)
+#   slope >= moderate   → MODERATE : memory.high × 1.10  (+10% 확장)
+#   slope >= urgent     → URGENT   : memory.high × 1.20  (+20% 확장)
+#
+# slope는 5초 동안 새로 refault된 페이지 수 (횟수 단위).
+# 값을 낮추면 더 민감하게 반응, 높이면 둔감하게 반응.
+
+# MODERATE 판정 임계값 (기본값: 10)
 #refault_slope_moderate=10
 
-# Refault slope for URGENT urgency (default: 100)
+# URGENT 판정 임계값 (기본값: 100)
 #refault_slope_urgent=100
+
+# ─── memory.high 하한선 ──────────────────────────────────────────
+#
+# IDLE 상태에서 memory.high를 줄일 때 이 값보다 낮아지지 않음.
+# 또한 cgroup을 처음 등록할 때 초기 memory.high의 최솟값이기도 함.
+# 단위: MB (기본값: 16)
+#
+# 예) 아주 작은 cgroup이 많은 환경에서는 8로 낮춰도 됨.
+#     메모리가 빡빡한 환경에서는 기본값 유지 권장.
+#min_limit_mb=16
+
+# ─── grow 상한 (usage 대비 비율) ─────────────────────────────────
+#
+# refault가 있어도 현재 memory.high가 이미 usage의 N배를 초과하면
+# grow를 건너뜀.  접근 패턴이 산발적인 cgroup이 memory.high를
+# 무한정 키우는 것을 방지하기 위한 안전장치.
+#
+#   limit >= usage × ratio  →  grow 중단 (DEBUG 로그 출력)
+#   limit <  usage × ratio  →  refault slope에 따라 정상 grow
+#
+# 기본값: 2  (limit이 usage의 2배를 초과하면 grow 안 함)
+# 0으로 설정하면 상한 없이 항상 grow 허용.
+#limit_usage_ratio=2
