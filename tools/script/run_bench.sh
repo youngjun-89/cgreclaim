@@ -95,7 +95,7 @@ ssh_cmd() {
 
 scp_from_board() {
     # shellcheck disable=SC2086
-    scp -r $SSH_OPTS "$BOARD:$1" "$2" 2>/dev/null || true
+    scp -r $SSH_OPTS "$BOARD:$1" "$2"
 }
 
 wait_for_ssh() {
