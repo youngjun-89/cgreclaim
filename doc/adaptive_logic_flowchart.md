@@ -28,14 +28,12 @@
 ║     │                                                           ║
 ║     ├─[inotify 이벤트?]──→ cgroup 추가/삭제 처리               ║
 ║     │                                                           ║
-║     │   read_usage()  : memory.current 읽기 (매 poll)          ║
+║     │   refault_elapsed_ms += poll_interval_ms                 ║
 ║     │                                                           ║
-║     │   poll_count++                                            ║
-║     │                                                           ║
-║     └─[poll_count >= 5?]─── NO ──→ 다음 poll                  ║
-║              │  (REFAULT_SAMPLE_INTERVAL = 5)                   ║
-║             YES                                                 ║
-║              │  poll_count = 0                                  ║
+║     └─[refault_elapsed_ms >= refault_interval_ms?]             ║
+║              │            NO ──→ 다음 poll                     ║
+║             YES  (기본 1000ms마다, 설정으로 변경 가능)          ║
+║              │  refault_elapsed_ms = 0                         ║
 ║              │                                                  ║
 ║              ▼                                                  ║
 ║       sample_refault()   ← memory.stat에서 refault 카운터 읽기 ║
@@ -45,6 +43,7 @@
 ║       │     각 cgroup별 refault_urgency 판정          │         ║
 ║       │                                              │         ║
 ║       │  slope = refault - prev_refault              │         ║
+║       │  (샘플 구간 내 새로 refault된 page 수, 절대값)│         ║
 ║       │                                              │         ║
 ║       │  slope == 0    → IDLE                        │         ║
 ║       │  slope >= 100  → URGENT  (refault_slope_urgent)        ║
@@ -85,12 +84,11 @@
 | 항목 | 기본값 | 설정 키 | 설명 |
 |---|---|---|---|
 | `poll_interval_ms` | 1000ms | `poll_interval_ms` | 기본 폴링 주기 |
-| `refault_interval_ms` | 1000ms | `refault_interval_ms` | refault 샘플링 주기 |
-| `REFAULT_SAMPLE_INTERVAL` | 5 polls | — | refault 샘플링 실제 간격 (≈5초) |
+| `refault_interval_ms` | 1000ms | `refault_interval_ms` | refault 샘플링 + limit 조정 주기 |
 | `CONFIG_RELOAD_INTERVAL` | 30 polls | — | config 파일 재로드 주기 (≈30초) |
 | `SETTLE_WAIT_SEC` | 10초 | — | 초기 안정화 대기 |
-| `refault_slope_urgent` | **100** | `refault_slope_urgent` | URGENT 판정 기준 |
-| `refault_slope_moderate` | **10** | `refault_slope_moderate` | MODERATE 판정 기준 |
+| `refault_slope_urgent` | **100** | `refault_slope_urgent` | URGENT 판정 기준 (샘플 구간 내 refault page 수, 절대값) |
+| `refault_slope_moderate` | **10** | `refault_slope_moderate` | MODERATE 판정 기준 (샘플 구간 내 refault page 수, 절대값) |
 | `GROW_FACTOR_URGENT` | **×1.20** | — | URGENT 시 memory.high +20% |
 | `GROW_FACTOR_MODERATE` | **×1.10** | — | MODERATE 시 memory.high +10% |
 | `SHRINK_FACTOR` | **×0.95** | — | IDLE 시 memory.high −5% |
