@@ -15,6 +15,9 @@ int cgr_config_load(struct cgr_ctx *ctx)
 	if (!ctx)
 		return -1;
 
+	/* Reset exclude list before reload so removed patterns take effect */
+	ctx->nr_excludes = 0;
+
 	fp = fopen(CGR_CONFIG_PATH, "r");
 	if (!fp) {
 		/* Missing file is fine — keep defaults */
@@ -96,6 +99,15 @@ int cgr_config_load(struct cgr_ctx *ctx)
 				ctx->limit_usage_ratio = v;
 				cgr_log(ctx, CGR_LOG_INFO,
 					"config: limit_usage_ratio=%u", v);
+			}
+		} else if (strcmp(key, "exclude") == 0) {
+			if (*val && ctx->nr_excludes < CGR_MAX_EXCLUDES) {
+				snprintf(ctx->excludes[ctx->nr_excludes],
+					 CGR_EXCLUDE_PAT_LEN, "%s", val);
+				cgr_log(ctx, CGR_LOG_INFO,
+					"config: exclude[%d]=%s",
+					ctx->nr_excludes, val);
+				ctx->nr_excludes++;
 			}
 		}
 		/* Unknown keys silently ignored */

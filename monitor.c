@@ -633,6 +633,30 @@ static void *monitor_thread(void *arg)
 		if (ctx->config_reload_count >= CONFIG_RELOAD_INTERVAL) {
 			ctx->config_reload_count = 0;
 			cgr_config_load(ctx);
+
+			/* Purge groups that now match exclude patterns */
+			if (ctx->nr_excludes > 0) {
+				char to_remove[CGR_GROUPS_INIT_CAP * 2][256];
+				int rm_count = 0, j;
+
+				pthread_rwlock_rdlock(&ctx->lock);
+				for (j = 0; j < ctx->groups_cap && rm_count < (int)(sizeof(to_remove)/sizeof(to_remove[0])); j++) {
+					if (ctx->groups[j].active &&
+					    cgr_is_excluded(ctx, ctx->groups[j].path)) {
+						snprintf(to_remove[rm_count], 256,
+							 "%s", ctx->groups[j].path);
+						rm_count++;
+					}
+				}
+				pthread_rwlock_unlock(&ctx->lock);
+
+				for (j = 0; j < rm_count; j++) {
+					cgr_log(ctx, CGR_LOG_INFO,
+						"exclude: removing %s",
+						to_remove[j]);
+					cgr_remove_cgroup(ctx, to_remove[j]);
+				}
+			}
 		}
 	}
 

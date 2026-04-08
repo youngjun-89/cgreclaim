@@ -56,3 +56,16 @@
 # 기본값: 2  (limit이 usage의 2배를 초과하면 grow 안 함)
 # 0으로 설정하면 상한 없이 항상 grow 허용.
 #limit_usage_ratio=2
+
+# ─── cgroup 제외 패턴 ───────────────────────────────────────────
+#
+# 특정 cgroup을 memory.high 관리 대상에서 제외.
+# cgroup 경로의 마지막 컴포넌트(basename)에 대해 glob 매칭.
+# fnmatch 패턴: *, ?, [...] 사용 가능.
+# 여러 패턴을 지정하려면 exclude= 줄을 여러 번 작성.
+# 설정 리로드 시 새로 매칭되는 기존 cgroup은 자동으로 해제됨.
+#
+# 예)
+#   exclude=init.scope
+#   exclude=system_*
+#   exclude=weston
