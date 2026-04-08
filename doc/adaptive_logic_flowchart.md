@@ -89,9 +89,9 @@
 | `SETTLE_WAIT_SEC` | 10초 | — | 초기 안정화 대기 |
 | `refault_slope_urgent` | **100** | `refault_slope_urgent` | URGENT 판정 기준 (샘플 구간 내 refault page 수, 절대값) |
 | `refault_slope_moderate` | **10** | `refault_slope_moderate` | MODERATE 판정 기준 (샘플 구간 내 refault page 수, 절대값) |
-| `GROW_FACTOR_URGENT` | **×1.20** | — | URGENT 시 memory.high +20% |
-| `GROW_FACTOR_MODERATE` | **×1.10** | — | MODERATE 시 memory.high +10% |
-| `SHRINK_FACTOR` | **×0.95** | — | IDLE 시 memory.high −5% |
+| `GROW_FACTOR_URGENT` | **×1.20** | `grow_pct_urgent` | URGENT 시 memory.high +N% (기본 20%) |
+| `GROW_FACTOR_MODERATE` | **×1.10** | `grow_pct_moderate` | MODERATE 시 memory.high +N% (기본 10%) |
+| `SHRINK_FACTOR` | **×0.95** | `shrink_pct` | IDLE 시 memory.high -N% (기본 5%) |
 | `min_limit` | **16MB** | `min_limit_mb` | memory.high 하한선 |
 | `limit_usage_ratio` | **2** | `limit_usage_ratio` | grow 상한 배수 (0=비활성) |
 

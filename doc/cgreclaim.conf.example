@@ -35,6 +35,25 @@
 # URGENT 판정 임계값 (기본값: 100)
 #refault_slope_urgent=100
 
+# ─── memory.high 조정 비율 ───────────────────────────────────────
+#
+# 긴급도별 memory.high 증감 비율 (정수 %).
+# 기본값:  IDLE -5%, MODERATE +10%, URGENT +20%
+#
+# 비율이 클수록 한 번에 더 크게 반응.
+# grow_pct=0 으로 설정하면 해당 긴급도에서 grow를 완전히 비활성화.
+# shrink_pct=0 으로 설정하면 IDLE에서 limit을 줄이지 않음.
+# shrink_pct >= 100 은 무시됨 (limit을 0으로 만들 수 있어 위험).
+
+# URGENT 시 memory.high 증가율 % (기본값: 20)
+#grow_pct_urgent=20
+
+# MODERATE 시 memory.high 증가율 % (기본값: 10)
+#grow_pct_moderate=10
+
+# IDLE 시 memory.high 감소율 % (기본값: 5)
+#shrink_pct=5
+
 # ─── memory.high 하한선 ──────────────────────────────────────────
 #
 # IDLE 상태에서 memory.high를 줄일 때 이 값보다 낮아지지 않음.
