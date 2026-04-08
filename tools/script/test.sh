@@ -1,4 +1,5 @@
 #!/bin/sh
+# TOOLS_VERSION=2
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TOOLS_DIR="$SCRIPT_DIR/.."
 

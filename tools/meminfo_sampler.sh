@@ -1,12 +1,13 @@
 #!/bin/sh
-# /proc/meminfo sampler
-# ---------------------
+# /proc/meminfo sampler — TOOLS_VERSION=2
+# ----------------------------------------
 # Continuously samples MemFree, MemAvailable, Swap, and Anon/File page stats
 # from /proc/meminfo.  Press Ctrl+C (or send SIGTERM) to stop — collected
 # data is saved to a CSV and plotted with gnuplot automatically if available.
 #
 # Usage: meminfo_sampler.sh [-i SECONDS]
 
+TOOLS_VERSION=2
 INTERVAL=1
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOGDIR="$SCRIPT_DIR/log/meminfo_sampler"

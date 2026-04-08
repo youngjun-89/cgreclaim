@@ -30,6 +30,7 @@ BOARD_CGRD="/home/root/cgrd"
 CGRD_HEADSTART=20   # seconds to let cgrd warm up before test starts
 RUNS=5
 MODE="both"
+REQUIRED_VERSION=2  # must match TOOLS_VERSION in test.sh / meminfo_sampler.sh
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DATA_DIR="$SCRIPT_DIR/../data"
@@ -117,24 +118,48 @@ wait_after_reboot() {
     wait_for_ssh
 }
 
+# ── deploy & version ─────────────────────────────────────────────────────────
+
+deploy_tools() {
+    log "Deploying tools v$REQUIRED_VERSION to board..."
+    # shellcheck disable=SC2086
+    ssh_cmd "mkdir -p '$BOARD_PROFILE_DIR/script' '$BOARD_PROFILE_DIR/log/meminfo_sampler' '$BOARD_PROFILE_DIR/log/cgroup_sampler'"
+    scp $SSH_OPTS \
+        "$TOOLS_DIR/meminfo_sampler.sh" \
+        "$TOOLS_DIR/cgroup_sampler.py" \
+        "$BOARD:$BOARD_PROFILE_DIR/" || die "Failed to deploy tools to board"
+    scp $SSH_OPTS \
+        "$TOOLS_DIR/script/test.sh" \
+        "$BOARD:$BOARD_PROFILE_DIR/script/" || die "Failed to deploy test.sh to board"
+    ssh_cmd "chmod +x '$BOARD_PROFILE_DIR/meminfo_sampler.sh' '$BOARD_PROFILE_DIR/script/test.sh'"
+    log "Deployed."
+}
+
+verify_version() {
+    REMOTE_VER=$(ssh_cmd "grep -m1 'TOOLS_VERSION=' '$BOARD_PROFILE_DIR/script/test.sh' 2>/dev/null | cut -d= -f2")
+    if [ "$REMOTE_VER" != "$REQUIRED_VERSION" ]; then
+        die "Version mismatch: board test.sh v${REMOTE_VER:-unknown}, required v$REQUIRED_VERSION"
+    fi
+    log "Version OK (v$REQUIRED_VERSION)."
+}
+
 # ── prereq check ──────────────────────────────────────────────────────────────
 
 check_local_prereqs() {
     command -v ssh  >/dev/null 2>&1 || die "ssh not found"
     command -v scp  >/dev/null 2>&1 || die "scp not found"
+    for f in "$TOOLS_DIR/meminfo_sampler.sh" "$TOOLS_DIR/cgroup_sampler.py" "$TOOLS_DIR/script/test.sh"; do
+        [ -f "$f" ] || die "Local file not found: $f"
+    done
 }
 
 check_board_prereqs() {
     GROUP="$1"
     log "Checking board prerequisites..."
-    ssh_cmd "test -d '$BOARD_PROFILE_DIR'" \
-        || die "Board: $BOARD_PROFILE_DIR not found — deploy tools first"
-    ssh_cmd "test -f '$BOARD_PROFILE_DIR/script/test.sh'" \
-        || die "Board: $BOARD_PROFILE_DIR/script/test.sh not found"
-    ssh_cmd "test -f '$BOARD_PROFILE_DIR/meminfo_sampler.sh'" \
-        || die "Board: $BOARD_PROFILE_DIR/meminfo_sampler.sh not found"
-    ssh_cmd "test -f '$BOARD_PROFILE_DIR/cgroup_sampler.py'" \
-        || die "Board: $BOARD_PROFILE_DIR/cgroup_sampler.py not found"
+    ssh_cmd "test -x '$BOARD_PROFILE_DIR/meminfo_sampler.sh'" \
+        || die "Board: meminfo_sampler.sh not found/executable — run deploy_tools"
+    ssh_cmd "test -x '$BOARD_PROFILE_DIR/script/test.sh'" \
+        || die "Board: test.sh not found/executable"
     ssh_cmd "command -v python3 >/dev/null 2>&1" \
         || die "Board: python3 not found"
     if [ "$GROUP" = "with_cgrd" ]; then
@@ -181,7 +206,7 @@ do_run() {
     fi
 
     log "Running test.sh -c on board..."
-    ssh_cmd "cd '$BOARD_PROFILE_DIR' && sh script/test.sh -c 2>&1 | tee /tmp/test_run.log"
+    ssh_cmd "cd '$BOARD_PROFILE_DIR' && sh script/test.sh -c >/tmp/test_run.log 2>&1"
     log "test.sh completed."
 
     collect_logs "$GROUP" "$RUN"
@@ -217,11 +242,15 @@ run_group() {
 check_local_prereqs
 mkdir -p "$DATA_DIR"
 
-# Initial clean reboot before any measurement
+# Initial clean reboot to ensure a known-good board state
 log "Initial reboot to ensure clean board state..."
 wait_for_ssh   # verify board is reachable first
 ssh_cmd "reboot" 2>/dev/null || true
 wait_after_reboot
+
+# Deploy latest tools and verify version
+deploy_tools
+verify_version
 
 case "$MODE" in
     with_cgrd)    run_group with_cgrd ;;
