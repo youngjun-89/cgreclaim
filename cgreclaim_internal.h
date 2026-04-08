@@ -18,6 +18,10 @@ enum cgr_refault_urgency {
 /* Initial capacity for the dynamic groups array; doubles on each grow. */
 #define CGR_GROUPS_INIT_CAP	16
 
+/* Exclude list: cgroups matching these glob patterns are not managed. */
+#define CGR_MAX_EXCLUDES	32
+#define CGR_EXCLUDE_PAT_LEN	256
+
 /* Internal per-cgroup state */
 struct cgr_group {
 	char		path[256];
@@ -53,6 +57,10 @@ struct cgr_ctx {
 	uint32_t		grow_pct_moderate;	/* default 10 — memory.high +10% on MODERATE */
 	uint32_t		shrink_pct;		/* default 5  — memory.high -5%  on IDLE */
 
+	/* Exclude patterns — cgroups whose basename matches are not managed */
+	char			excludes[CGR_MAX_EXCLUDES][CGR_EXCLUDE_PAT_LEN];
+	int			nr_excludes;
+
 	void (*log_fn)(int level, const char *fmt, ...);
 };
 
@@ -66,6 +74,7 @@ struct cgr_ctx {
 /* Internal helpers shared between cgreclaim.c and monitor.c */
 struct cgr_group *cgr_find_group(struct cgr_ctx *ctx, const char *path);
 void cgr_adjust_limits(struct cgr_ctx *ctx);
+int cgr_is_excluded(const struct cgr_ctx *ctx, const char *path);
 
 #ifdef __cplusplus
 }

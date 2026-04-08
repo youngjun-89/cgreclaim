@@ -900,6 +900,160 @@ static void test_refault_reads_usage(void)
 }
 
 /* ================================================================
+ * 11. Exclude patterns
+ * ================================================================ */
+
+static void test_exclude_patterns(void)
+{
+	char p1[512], p2[512], p3[512];
+	struct cgr_config cfg = {
+		.poll_interval_ms = 1000,
+		.scan_root = FAKE_CG_BASE,
+	};
+	struct cgr_ctx *ctx;
+	struct cgr_status st;
+	int found;
+
+	fake_cg_create("app_main", 50 << 20, 0, p1, sizeof(p1));
+	fake_cg_create("app_helper", 30 << 20, 0, p2, sizeof(p2));
+	fake_cg_create("system_init", 40 << 20, 0, p3, sizeof(p3));
+
+	ctx = cgr_init(&cfg);
+
+	/* Set up exclude patterns */
+	snprintf(ctx->excludes[0], CGR_EXCLUDE_PAT_LEN, "system_*");
+	ctx->nr_excludes = 1;
+
+	TEST(exclude_blocks_add);
+	if (cgr_add_cgroup(ctx, p3) == CGR_ERR_INVAL)
+		PASS();
+	else
+		FAIL("system_init should be excluded");
+
+	TEST(exclude_allows_non_matching);
+	if (cgr_add_cgroup(ctx, p1) == CGR_OK &&
+	    cgr_add_cgroup(ctx, p2) == CGR_OK)
+		PASS();
+	else
+		FAIL("non-matching cgroups should be allowed");
+
+	TEST(exclude_not_tracked);
+	if (cgr_get_status(ctx, p3, &st) == CGR_ERR_NOENT)
+		PASS();
+	else
+		FAIL("excluded cgroup should not be tracked");
+
+	cgr_destroy(ctx);
+	fake_cg_destroy(p1);
+	fake_cg_destroy(p2);
+	fake_cg_destroy(p3);
+
+	/* Test exclude with scan_cgroups */
+	fake_cg_create("scan_ok", 50 << 20, 0, p1, sizeof(p1));
+	fake_cg_create("scan_skip", 30 << 20, 0, p2, sizeof(p2));
+
+	ctx = cgr_init(&cfg);
+	snprintf(ctx->excludes[0], CGR_EXCLUDE_PAT_LEN, "scan_skip");
+	ctx->nr_excludes = 1;
+
+	TEST(exclude_scan_skips_matching);
+	found = cgr_scan_cgroups(ctx);
+	if (found == 1 && cgr_get_status(ctx, p2, &st) == CGR_ERR_NOENT)
+		PASS();
+	else
+		FAIL("found=%d", found);
+
+	cgr_destroy(ctx);
+	fake_cg_destroy(p1);
+	fake_cg_destroy(p2);
+
+	/* Test wildcard patterns */
+	fake_cg_create("test_foo", 50 << 20, 0, p1, sizeof(p1));
+	fake_cg_create("test_bar", 30 << 20, 0, p2, sizeof(p2));
+	fake_cg_create("prod_baz", 40 << 20, 0, p3, sizeof(p3));
+
+	ctx = cgr_init(&cfg);
+	snprintf(ctx->excludes[0], CGR_EXCLUDE_PAT_LEN, "test_*");
+	ctx->nr_excludes = 1;
+
+	TEST(exclude_wildcard_matches_multiple);
+	found = cgr_scan_cgroups(ctx);
+	if (found == 1 &&
+	    cgr_get_status(ctx, p1, &st) == CGR_ERR_NOENT &&
+	    cgr_get_status(ctx, p2, &st) == CGR_ERR_NOENT &&
+	    cgr_get_status(ctx, p3, &st) == CGR_OK)
+		PASS();
+	else
+		FAIL("found=%d", found);
+
+	cgr_destroy(ctx);
+	fake_cg_destroy(p1);
+	fake_cg_destroy(p2);
+	fake_cg_destroy(p3);
+
+	/* Test cgr_is_excluded directly */
+	{
+		struct cgr_ctx test_ctx;
+		memset(&test_ctx, 0, sizeof(test_ctx));
+		snprintf(test_ctx.excludes[0], CGR_EXCLUDE_PAT_LEN, "app_*");
+		snprintf(test_ctx.excludes[1], CGR_EXCLUDE_PAT_LEN, "init");
+		test_ctx.nr_excludes = 2;
+
+		TEST(is_excluded_basename_only);
+		if (cgr_is_excluded(&test_ctx, "/sys/fs/cgroup/app_foo") == 1 &&
+		    cgr_is_excluded(&test_ctx, "/sys/fs/cgroup/init") == 1 &&
+		    cgr_is_excluded(&test_ctx, "/sys/fs/cgroup/other") == 0)
+			PASS();
+		else
+			FAIL("");
+	}
+
+	/* Test purge: add group, then set exclude, verify removal logic */
+	fake_cg_create("purge_me", 50 << 20, 0, p1, sizeof(p1));
+	fake_cg_create("keep_me", 30 << 20, 0, p2, sizeof(p2));
+
+	ctx = cgr_init(&cfg);
+	cgr_add_cgroup(ctx, p1);
+	cgr_add_cgroup(ctx, p2);
+
+	/* Now add exclude pattern that matches purge_me */
+	snprintf(ctx->excludes[0], CGR_EXCLUDE_PAT_LEN, "purge_*");
+	ctx->nr_excludes = 1;
+
+	/* Manually purge (simulating what monitor does after config reload) */
+	{
+		int j;
+		char to_rm[16][256];
+		int rm_count = 0;
+
+		pthread_rwlock_rdlock(&ctx->lock);
+		for (j = 0; j < ctx->groups_cap; j++) {
+			if (ctx->groups[j].active &&
+			    cgr_is_excluded(ctx, ctx->groups[j].path)) {
+				snprintf(to_rm[rm_count], 256, "%s",
+					 ctx->groups[j].path);
+				rm_count++;
+			}
+		}
+		pthread_rwlock_unlock(&ctx->lock);
+
+		for (j = 0; j < rm_count; j++)
+			cgr_remove_cgroup(ctx, to_rm[j]);
+	}
+
+	TEST(exclude_purge_removes_existing);
+	if (cgr_get_status(ctx, p1, &st) == CGR_ERR_NOENT &&
+	    cgr_get_status(ctx, p2, &st) == CGR_OK)
+		PASS();
+	else
+		FAIL("");
+
+	cgr_destroy(ctx);
+	fake_cg_destroy(p1);
+	fake_cg_destroy(p2);
+}
+
+/* ================================================================
  * main
  * ================================================================ */
 
@@ -950,6 +1104,9 @@ int main(void)
 
 	printf("\n[inotify live]\n");
 	test_inotify_live();
+
+	printf("\n[exclude patterns]\n");
+	test_exclude_patterns();
 
 	printf("\n[inotify recursive]\n");
 	test_inotify_recursive();

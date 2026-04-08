@@ -4,6 +4,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <fnmatch.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,6 +23,26 @@ struct cgr_group *cgr_find_group(struct cgr_ctx *ctx, const char *path)
 			return &ctx->groups[i];
 	}
 	return NULL;
+}
+
+/*
+ * Check if a cgroup path matches any exclude pattern.
+ * Matching is done against the basename (last path component)
+ * using fnmatch() glob patterns (supports *, ?, []).
+ */
+int cgr_is_excluded(const struct cgr_ctx *ctx, const char *path)
+{
+	const char *name;
+	int i;
+
+	name = strrchr(path, '/');
+	name = name ? name + 1 : path;
+
+	for (i = 0; i < ctx->nr_excludes; i++) {
+		if (fnmatch(ctx->excludes[i], name, 0) == 0)
+			return 1;
+	}
+	return 0;
 }
 
 static struct cgr_group *find_free_slot(struct cgr_ctx *ctx)
@@ -132,6 +153,11 @@ int cgr_add_cgroup(struct cgr_ctx *ctx, const char *path)
 
 	if (!ctx || !path)
 		return CGR_ERR_INVAL;
+
+	if (cgr_is_excluded(ctx, path)) {
+		cgr_log(ctx, CGR_LOG_INFO, "add_cgroup: %s excluded", path);
+		return CGR_ERR_INVAL;
+	}
 
 	pthread_rwlock_wrlock(&ctx->lock);
 
