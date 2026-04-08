@@ -178,15 +178,20 @@ collect_logs() {
     mkdir -p "$DEST/meminfo" "$DEST/cgroup"
 
     log "Collecting logs → $DEST"
-    scp_from_board "$BOARD_PROFILE_DIR/log/meminfo_sampler/." "$DEST/meminfo/"
-    scp_from_board "$BOARD_PROFILE_DIR/log/cgroup_sampler/."  "$DEST/cgroup/"
-    scp_from_board "/tmp/test_run.log"                         "$DEST/test_run.log"
-
+    scp_from_board "$BOARD_PROFILE_DIR/log/meminfo_sampler/." "$DEST/meminfo/" \
+        || log "WARN: meminfo logs not collected"
+    scp_from_board "$BOARD_PROFILE_DIR/log/cgroup_sampler/."  "$DEST/cgroup/" \
+        || log "WARN: cgroup logs not collected"
+    scp_from_board "/tmp/test_run.log" "$DEST/test_run.log" \
+        || log "WARN: test_run.log not collected"
     if [ "$GROUP" = "with_cgrd" ]; then
-        scp_from_board "/tmp/cgrd.log" "$DEST/cgrd.log"
+        scp_from_board "/tmp/cgrd.log" "$DEST/cgrd.log" \
+            || log "WARN: cgrd.log not collected"
     fi
 
-    log "Logs saved to $DEST/"
+    # Clean board logs after successful collection
+    ssh_cmd "rm -rf '$BOARD_PROFILE_DIR/log/' /tmp/test_run.log /tmp/cgrd.log"
+    log "Logs saved to $DEST/ and cleaned from board."
 }
 
 # ── single run ────────────────────────────────────────────────────────────────
@@ -196,7 +201,7 @@ do_run() {
     RUN="$2"
     log "--- $GROUP run $RUN/$RUNS ---"
 
-    # Clean up previous run's logs on board
+    # Ensure board log dir is clean before run (safety net if previous collect failed)
     ssh_cmd "rm -rf '$BOARD_PROFILE_DIR/log/' /tmp/test_run.log /tmp/cgrd.log"
 
     if [ "$GROUP" = "with_cgrd" ]; then
