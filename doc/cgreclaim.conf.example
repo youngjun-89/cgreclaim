@@ -19,13 +19,14 @@
 
 # ─── refault 기반 긴급도 판정 임계값 ────────────────────────────
 #
-# 매 5초마다 memory.stat에서 refault 카운터를 읽어 delta(slope)를 계산.
+# refault_interval_ms마다 memory.stat에서 refault 카운터를 읽어
+# delta(slope)를 계산.  기본값 1000ms 기준이면 초당 refault 페이지 수.
 #
 #   slope == 0          → IDLE     : memory.high × 0.95  (-5% 축소)
 #   slope >= moderate   → MODERATE : memory.high × 1.10  (+10% 확장)
 #   slope >= urgent     → URGENT   : memory.high × 1.20  (+20% 확장)
 #
-# slope는 5초 동안 새로 refault된 페이지 수 (횟수 단위).
+# slope는 refault_interval_ms 구간 동안 새로 refault된 페이지 수 (절대값).
 # 값을 낮추면 더 민감하게 반응, 높이면 둔감하게 반응.
 
 # MODERATE 판정 임계값 (기본값: 10)
