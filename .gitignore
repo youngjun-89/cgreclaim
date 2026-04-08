@@ -11,3 +11,8 @@ test_config
 test_lazy_log
 test/test_cgreclaim
 *.gch
+
+# tools runtime output — not committed
+tools/log/
+tools/data/
+tools/meminfo_samples_*.csv
