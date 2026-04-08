@@ -33,7 +33,7 @@ Tests marked SKIP require `/home/root` to be accessible (target board).
 ## Architecture
 
 - **memory.high only** — never write to `memory.max`. All limit control via `memory.high` (soft limit, kernel reclaims gradually).
-- Adaptive loop: poll every 1s, sample refaults every 5s, adjust memory.high based on refault slope (IDLE/MODERATE/URGENT).
+- Adaptive loop: poll every `poll_interval_ms` (default 1s), sample refaults + adjust memory.high every `refault_interval_ms` (default 1s). Urgency: IDLE (×0.95, −5%), MODERATE (×1.10, +10%), URGENT (×1.20, +20%). Floor: `min_limit_mb`.
 - Initial memory.high = current usage + 10% headroom.
 - inotify watches `scan_root` for new/removed cgroups — event-driven, not polling.
 - `/home/root` mount wait: monitor thread blocks until path is accessible. Early logs buffered (64 entries) and flushed on mount.
