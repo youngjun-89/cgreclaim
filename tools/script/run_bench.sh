@@ -180,8 +180,8 @@ do_run() {
         sleep "$CGRD_HEADSTART"
     fi
 
-    log "Running test.sh -c on board (this takes ~100 s)..."
-    ssh_cmd "cd '$BOARD_PROFILE_DIR' && sh script/test.sh -c >/tmp/test_run.log 2>&1"
+    log "Running test.sh -c on board..."
+    ssh_cmd "cd '$BOARD_PROFILE_DIR' && sh script/test.sh -c 2>&1 | tee /tmp/test_run.log"
     log "test.sh completed."
 
     collect_logs "$GROUP" "$RUN"
