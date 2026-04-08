@@ -49,6 +49,9 @@ struct cgr_ctx {
 	uint64_t		refault_slope_urgent;	/* default 100 */
 	uint64_t		min_limit;		/* default CGR_MIN_LIMIT_BYTES (16MB) */
 	uint32_t		limit_usage_ratio;	/* default 2 — cap grow at limit > usage * ratio */
+	uint32_t		grow_pct_urgent;	/* default 20 — memory.high +20% on URGENT */
+	uint32_t		grow_pct_moderate;	/* default 10 — memory.high +10% on MODERATE */
+	uint32_t		shrink_pct;		/* default 5  — memory.high -5%  on IDLE */
 
 	void (*log_fn)(int level, const char *fmt, ...);
 };

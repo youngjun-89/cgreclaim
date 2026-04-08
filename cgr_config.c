@@ -97,6 +97,26 @@ int cgr_config_load(struct cgr_ctx *ctx)
 				cgr_log(ctx, CGR_LOG_INFO,
 					"config: limit_usage_ratio=%u", v);
 			}
+		} else if (strcmp(key, "grow_pct_urgent") == 0) {
+			uint32_t v = (uint32_t)strtoul(val, NULL, 10);
+
+			ctx->grow_pct_urgent = v;
+			cgr_log(ctx, CGR_LOG_INFO,
+				"config: grow_pct_urgent=%u", v);
+		} else if (strcmp(key, "grow_pct_moderate") == 0) {
+			uint32_t v = (uint32_t)strtoul(val, NULL, 10);
+
+			ctx->grow_pct_moderate = v;
+			cgr_log(ctx, CGR_LOG_INFO,
+				"config: grow_pct_moderate=%u", v);
+		} else if (strcmp(key, "shrink_pct") == 0) {
+			uint32_t v = (uint32_t)strtoul(val, NULL, 10);
+
+			if (v < 100) {
+				ctx->shrink_pct = v;
+				cgr_log(ctx, CGR_LOG_INFO,
+					"config: shrink_pct=%u", v);
+			}
 		}
 		/* Unknown keys silently ignored */
 	}

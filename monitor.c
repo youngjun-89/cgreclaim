@@ -77,13 +77,14 @@ static void sample_refault(struct cgr_ctx *ctx)
 /* ---------- adaptive limit adjustment ---------- */
 
 /*
- * Per-cgroup growth/shrink factors.
+ * Per-cgroup growth/shrink percentages — runtime-tunable via config file.
+ * These are the compile-time defaults; actual values live in cgr_ctx.
  * Grow faster than shrink to react quickly to pressure while
  * avoiding oscillation on the way down.
  */
-#define GROW_FACTOR_URGENT	1.20	/* +20% on severe refault slope */
-#define GROW_FACTOR_MODERATE	1.10	/* +10% on mild refault slope */
-#define SHRINK_FACTOR		0.95	/* -5%  when idle (no refaults) */
+#define GROW_PCT_URGENT_DEFAULT		20	/* +20% on severe refault slope */
+#define GROW_PCT_MODERATE_DEFAULT	10	/* +10% on mild refault slope */
+#define SHRINK_PCT_DEFAULT		 5	/* -5%  when idle (no refaults) */
 
 static const char *urgency_str[] = { "IDLE", "MODERATE", "URGENT" };
 
@@ -126,7 +127,7 @@ void cgr_adjust_limits(struct cgr_ctx *ctx)
 					ctx->limit_usage_ratio);
 				continue;
 			}
-			new_limit = (uint64_t)(g->limit * GROW_FACTOR_URGENT);
+			new_limit = g->limit + g->limit * ctx->grow_pct_urgent / 100;
 			if (new_limit == g->limit)
 				new_limit = g->limit + ctx->min_limit;
 			break;
@@ -141,12 +142,12 @@ void cgr_adjust_limits(struct cgr_ctx *ctx)
 					ctx->limit_usage_ratio);
 				continue;
 			}
-			new_limit = (uint64_t)(g->limit * GROW_FACTOR_MODERATE);
+			new_limit = g->limit + g->limit * ctx->grow_pct_moderate / 100;
 			if (new_limit == g->limit)
 				new_limit = g->limit + ctx->min_limit;
 			break;
 		default: /* CGR_REFAULT_IDLE */
-			new_limit = (uint64_t)(g->limit * SHRINK_FACTOR);
+			new_limit = g->limit - g->limit * ctx->shrink_pct / 100;
 			break;
 		}
 

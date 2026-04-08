@@ -97,6 +97,9 @@ struct cgr_ctx *cgr_init(const struct cgr_config *cfg)
 	ctx->refault_slope_urgent = 100;
 	ctx->min_limit = CGR_MIN_LIMIT_BYTES;
 	ctx->limit_usage_ratio = 2;
+	ctx->grow_pct_urgent = 20;
+	ctx->grow_pct_moderate = 10;
+	ctx->shrink_pct = 5;
 
 	pthread_rwlock_init(&ctx->lock, NULL);
 

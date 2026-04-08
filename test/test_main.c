@@ -330,6 +330,9 @@ static void test_config_parse(void)
 	ctx.refault_slope_urgent = 100;
 	ctx.min_limit = CGR_MIN_LIMIT_BYTES;
 	ctx.limit_usage_ratio = 2;
+	ctx.grow_pct_urgent = 20;
+	ctx.grow_pct_moderate = 10;
+	ctx.shrink_pct = 5;
 
 	fp = fopen(cfg_path, "w");
 	fprintf(fp, "# test config\n");
@@ -339,6 +342,9 @@ static void test_config_parse(void)
 	fprintf(fp, "refault_slope_urgent=200\n");
 	fprintf(fp, "min_limit_mb=8\n");
 	fprintf(fp, "limit_usage_ratio=3\n");
+	fprintf(fp, "grow_pct_urgent=30\n");
+	fprintf(fp, "grow_pct_moderate=15\n");
+	fprintf(fp, "shrink_pct=8\n");
 	fprintf(fp, "unknown_key=ignored\n");
 	fclose(fp);
 
@@ -368,6 +374,15 @@ static void test_config_parse(void)
 				ctx.min_limit = strtoull(val, NULL, 10) << 20;
 			else if (strcmp(key, "limit_usage_ratio") == 0)
 				ctx.limit_usage_ratio = (uint32_t)strtoul(val, NULL, 10);
+			else if (strcmp(key, "grow_pct_urgent") == 0)
+				ctx.grow_pct_urgent = (uint32_t)strtoul(val, NULL, 10);
+			else if (strcmp(key, "grow_pct_moderate") == 0)
+				ctx.grow_pct_moderate = (uint32_t)strtoul(val, NULL, 10);
+			else if (strcmp(key, "shrink_pct") == 0) {
+				uint32_t v = (uint32_t)strtoul(val, NULL, 10);
+				if (v < 100)
+					ctx.shrink_pct = v;
+			}
 		}
 	}
 	fclose(fp);
@@ -407,6 +422,24 @@ static void test_config_parse(void)
 		PASS();
 	else
 		FAIL("got %u", ctx.limit_usage_ratio);
+
+	TEST(config_grow_pct_urgent);
+	if (ctx.grow_pct_urgent == 30)
+		PASS();
+	else
+		FAIL("got %u", ctx.grow_pct_urgent);
+
+	TEST(config_grow_pct_moderate);
+	if (ctx.grow_pct_moderate == 15)
+		PASS();
+	else
+		FAIL("got %u", ctx.grow_pct_moderate);
+
+	TEST(config_shrink_pct);
+	if (ctx.shrink_pct == 8)
+		PASS();
+	else
+		FAIL("got %u", ctx.shrink_pct);
 
 	unlink(cfg_path);
 }
@@ -641,22 +674,23 @@ static void test_adjust_limits(void)
 
 	TEST(adjust_shrink_when_idle);
 	cgr_get_status(ctx, p1, &st_after);
-	if (st_after.limit < st_before.limit)
+	/* p1: IDLE → limit × (1 - shrink_pct/100) = limit × 0.95 */
+	if (st_after.limit == st_before.limit - st_before.limit * 5 / 100)
 		PASS();
 	else
-		FAIL("before=%luMB after=%luMB",
-		     (unsigned long)(st_before.limit >> 20),
+		FAIL("expected %luMB (−5%%), got %luMB",
+		     (unsigned long)((st_before.limit - st_before.limit * 5 / 100) >> 20),
 		     (unsigned long)(st_after.limit >> 20));
 
 	TEST(adjust_grow_when_thrashing);
 	cgr_get_status(ctx, p2, &st_after);
-	/* p2 had slope=400 which is > urgent threshold(100) → grow */
+	/* p2: slope=400 > urgent(100) → limit × (1 + grow_pct_urgent/100) = limit × 1.20 */
 	cgr_get_status(ctx, p2, &st_after);
-	if (st_after.limit > st_before.limit)
+	if (st_after.limit == st_before.limit + st_before.limit * 20 / 100)
 		PASS();
 	else
-		FAIL("before=%luMB after=%luMB",
-		     (unsigned long)(st_before.limit >> 20),
+		FAIL("expected %luMB (+20%%), got %luMB",
+		     (unsigned long)((st_before.limit + st_before.limit * 20 / 100) >> 20),
 		     (unsigned long)(st_after.limit >> 20));
 
 	cgr_destroy(ctx);
