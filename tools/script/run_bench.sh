@@ -34,9 +34,11 @@ MODE="both"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DATA_DIR="$SCRIPT_DIR/../data"
 
-SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=10 -o BatchMode=yes"
-REBOOT_INITIAL_WAIT=60   # minimum seconds after 'reboot' before polling
-SSH_POLL_TIMEOUT=180     # maximum additional seconds to wait for SSH
+REBOOT_INITIAL_WAIT=30   # seconds to wait before starting SSH polling after reboot
+SSH_POLL_INTERVAL=10     # seconds between SSH attempts
+SSH_POLL_TIMEOUT=300     # max seconds to poll SSH after initial wait
+
+SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes -o ServerAliveInterval=10 -o ServerAliveCountMax=3"
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -95,21 +97,22 @@ scp_from_board() {
 }
 
 wait_for_ssh() {
-    log "Waiting for board $BOARD_IP to accept SSH..."
+    log "Polling SSH on $BOARD_IP (interval=${SSH_POLL_INTERVAL}s, timeout=${SSH_POLL_TIMEOUT}s)..."
     ELAPSED=0
     while ! ssh_cmd "true" >/dev/null 2>&1; do
         if [ "$ELAPSED" -ge "$SSH_POLL_TIMEOUT" ]; then
-            die "Board $BOARD_IP did not come up after $((REBOOT_INITIAL_WAIT+SSH_POLL_TIMEOUT))s"
+            die "Board $BOARD_IP did not respond to SSH after $((REBOOT_INITIAL_WAIT+SSH_POLL_TIMEOUT))s total"
         fi
-        sleep 5
-        ELAPSED=$((ELAPSED + 5))
+        printf "  [%s] still waiting... (%ds elapsed)\n" "$(date '+%H:%M:%S')" "$ELAPSED"
+        sleep "$SSH_POLL_INTERVAL"
+        ELAPSED=$((ELAPSED + SSH_POLL_INTERVAL))
     done
     log "Board is up (SSH ready)."
 }
 
-# Wait after a reboot: initial fixed delay then poll
+# Wait after a reboot: short initial delay (board won't be up yet), then poll
 wait_after_reboot() {
-    log "Rebooting board — waiting ${REBOOT_INITIAL_WAIT}s initial delay..."
+    log "Waiting ${REBOOT_INITIAL_WAIT}s before polling (board is rebooting)..."
     sleep "$REBOOT_INITIAL_WAIT"
     wait_for_ssh
 }
@@ -193,8 +196,7 @@ run_group() {
     GROUP="$1"
     log "=== Group: $GROUP — $RUNS run(s) ==="
 
-    # First run: board should already be up; just verify SSH
-    wait_for_ssh
+    # Board is already up (initial reboot or previous group's wait_after_reboot)
     check_board_prereqs "$GROUP"
 
     i=1
@@ -214,6 +216,12 @@ run_group() {
 
 check_local_prereqs
 mkdir -p "$DATA_DIR"
+
+# Initial clean reboot before any measurement
+log "Initial reboot to ensure clean board state..."
+wait_for_ssh   # verify board is reachable first
+ssh_cmd "reboot" 2>/dev/null || true
+wait_after_reboot
 
 case "$MODE" in
     with_cgrd)    run_group with_cgrd ;;
