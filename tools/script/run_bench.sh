@@ -33,7 +33,8 @@ MODE="both"
 REQUIRED_VERSION=2  # must match TOOLS_VERSION in test.sh / meminfo_sampler.sh
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DATA_DIR="$SCRIPT_DIR/../data"
+TOOLS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+DATA_DIR="$TOOLS_DIR/data"
 
 REBOOT_INITIAL_WAIT=30   # seconds to wait before starting SSH polling after reboot
 SSH_POLL_INTERVAL=10     # seconds between SSH attempts
