@@ -179,10 +179,26 @@ collect_logs() {
     mkdir -p "$DEST/meminfo" "$DEST/cgroup"
 
     log "Collecting logs → $DEST"
-    scp_from_board "$BOARD_PROFILE_DIR/log/meminfo_sampler/." "$DEST/meminfo/" \
-        || log "WARN: meminfo logs not collected"
-    scp_from_board "$BOARD_PROFILE_DIR/log/cgroup_sampler/."  "$DEST/cgroup/" \
-        || log "WARN: cgroup logs not collected"
+
+    # Debug: show what's on board before collecting
+    ssh_cmd "ls -la '$BOARD_PROFILE_DIR/log/' 2>/dev/null || echo '(log dir missing)'"
+
+    if ssh_cmd "test -d '$BOARD_PROFILE_DIR/log/meminfo_sampler'"; then
+        scp_from_board "$BOARD_PROFILE_DIR/log/meminfo_sampler" "$DEST/" \
+            && log "meminfo logs collected." \
+            || log "WARN: meminfo scp failed"
+    else
+        log "WARN: meminfo log dir not found on board"
+    fi
+
+    if ssh_cmd "test -d '$BOARD_PROFILE_DIR/log/cgroup_sampler'"; then
+        scp_from_board "$BOARD_PROFILE_DIR/log/cgroup_sampler" "$DEST/" \
+            && log "cgroup logs collected." \
+            || log "WARN: cgroup scp failed"
+    else
+        log "WARN: cgroup log dir not found on board"
+    fi
+
     scp_from_board "/tmp/test_run.log" "$DEST/test_run.log" \
         || log "WARN: test_run.log not collected"
     if [ "$GROUP" = "with_cgrd" ]; then
@@ -190,7 +206,7 @@ collect_logs() {
             || log "WARN: cgrd.log not collected"
     fi
 
-    # Clean board logs after successful collection
+    # Clean board logs after collection
     ssh_cmd "rm -rf '$BOARD_PROFILE_DIR/log/' /tmp/test_run.log /tmp/cgrd.log"
     log "Logs saved to $DEST/ and cleaned from board."
 }
