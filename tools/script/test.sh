@@ -45,7 +45,14 @@ printf "meminfo_sampler started (PID %s)\n" "$SAMPLER_PID"
 if [ "$USE_CGROUP" -eq 1 ]; then
     python3 "$TOOLS_DIR/cgroup_sampler.py" --outdir "$TOOLS_DIR/log/cgroup_sampler" &
     CGROUP_PID=$!
-    printf "cgroup_sampler started (PID %s)\n" "$CGROUP_PID"
+    # Give it a moment to start; if it exits immediately python3/cgroup not available
+    sleep 1
+    if ! kill -0 "$CGROUP_PID" 2>/dev/null; then
+        printf "WARN: cgroup_sampler failed to start (python3 or cgroup not available)\n" >&2
+        CGROUP_PID=""
+    else
+        printf "cgroup_sampler started (PID %s)\n" "$CGROUP_PID"
+    fi
 fi
 
 luna-send -n 1 -f luna://com.webos.service.preloadmanager/setPreloadPolicy '{"application" : {"id": "netflix","isEnabled" : false}, "permanent" : true}'
@@ -69,12 +76,12 @@ luna-send -n 1 -f luna://com.webos.applicationManager/launch '{"id":"netflix"}'
 
 sleep 15
 
-# Stop profiler → triggers CSV save + scp
-kill -INT "$SAMPLER_PID"
-if [ "$USE_CGROUP" -eq 1 ]; then
-    kill -INT "$CGROUP_PID"
-    wait "$CGROUP_PID"
+# Stop profilers — use TERM (more reliable on busybox ash than INT)
+kill -TERM "$SAMPLER_PID" 2>/dev/null
+if [ -n "$CGROUP_PID" ]; then
+    kill -TERM "$CGROUP_PID" 2>/dev/null
+    wait "$CGROUP_PID" 2>/dev/null
 fi
-wait "$SAMPLER_PID"
+wait "$SAMPLER_PID" 2>/dev/null
 printf "Done.\n"
 

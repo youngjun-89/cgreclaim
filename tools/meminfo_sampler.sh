@@ -42,7 +42,6 @@ PHASE=1
 trap 'STOP=1' INT TERM
 # SIGUSR1: advance to next phase (e.g. YouTube→Netflix boundary)
 trap 'PHASE=$((PHASE+1)); printf "\n[phase] → phase %s\n" "$PHASE" >&2' USR1
-
 printf "Sampling /proc/meminfo every %ss — press Ctrl+C to stop and save CSV.\n" "$INTERVAL"
 
 while [ "$STOP" -eq 0 ]; do
@@ -81,7 +80,8 @@ while [ "$STOP" -eq 0 ]; do
         "$(awk "BEGIN {printf \"%.1f\", $ACTIVE_ANON/1024}")" \
         "$(awk "BEGIN {printf \"%.1f\", $INACTIVE_ANON/1024}")"
 
-    sleep "$INTERVAL"
+    sleep "$INTERVAL" &
+    wait $!
 done
 
 printf "\nSampling stopped.\n"
