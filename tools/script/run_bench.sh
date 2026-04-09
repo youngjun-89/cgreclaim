@@ -347,35 +347,50 @@ log "  without_cgrd/: $DATA_DIR/without_cgrd/"
 if [ "$TIMING_ONLY" -eq 0 ]; then
     MEMINFO_PY="$TOOLS_DIR/meminfo_plot.py"
     CGROUP_PY="$TOOLS_DIR/cgroup_plot.py"
+    MEMINFO_ZOOM_PY="$TOOLS_DIR/meminfo_zoom_plot.py"
+    CGROUP_ZOOM_PY="$TOOLS_DIR/cgroup_zoom_plot.py"
     REPORT_DIR="$TOOLS_DIR/report/$SESSION"
     mkdir -p "$REPORT_DIR"
 
-    if [ -f "$MEMINFO_PY" ] && command -v python3 >/dev/null 2>&1; then
-        log "Generating meminfo comparison plot..."
-        if [ -d "$DATA_DIR/with_cgrd" ] && [ -d "$DATA_DIR/without_cgrd" ]; then
+    if [ -d "$DATA_DIR/with_cgrd" ] && [ -d "$DATA_DIR/without_cgrd" ] && command -v python3 >/dev/null 2>&1; then
+        if [ -f "$MEMINFO_PY" ]; then
+            log "Generating meminfo comparison plot..."
             python3 "$MEMINFO_PY" \
                 --with-cgrd    "$DATA_DIR/with_cgrd" \
                 --without-cgrd "$DATA_DIR/without_cgrd" \
                 --out "$REPORT_DIR/meminfo_comparison.png" \
                 && log "Saved: tools/report/$SESSION/meminfo_comparison.png" \
                 || log "WARN: meminfo_plot.py failed (non-fatal)"
-        else
-            log "WARN: no meminfo data dirs found"
         fi
-    fi
-
-    if [ -f "$CGROUP_PY" ] && command -v python3 >/dev/null 2>&1; then
-        log "Generating cgroup comparison plot..."
-        if [ -d "$DATA_DIR/with_cgrd" ] && [ -d "$DATA_DIR/without_cgrd" ]; then
+        if [ -f "$CGROUP_PY" ]; then
+            log "Generating cgroup comparison plot..."
             python3 "$CGROUP_PY" \
                 --with-cgrd    "$DATA_DIR/with_cgrd" \
                 --without-cgrd "$DATA_DIR/without_cgrd" \
                 --out "$REPORT_DIR/cgroup_comparison.png" \
                 && log "Saved: tools/report/$SESSION/cgroup_comparison.png" \
                 || log "WARN: cgroup_plot.py failed (non-fatal)"
-        else
-            log "WARN: no cgroup data dirs found"
         fi
+        if [ -f "$MEMINFO_ZOOM_PY" ] && [ "$COLLECT_SYSLOG" -eq 1 ]; then
+            log "Generating meminfo zoom plot (syslog window)..."
+            python3 "$MEMINFO_ZOOM_PY" \
+                --with-cgrd    "$DATA_DIR/with_cgrd" \
+                --without-cgrd "$DATA_DIR/without_cgrd" \
+                --out "$REPORT_DIR/meminfo_zoom.png" \
+                && log "Saved: tools/report/$SESSION/meminfo_zoom.png" \
+                || log "WARN: meminfo_zoom_plot.py failed (non-fatal)"
+        fi
+        if [ -f "$CGROUP_ZOOM_PY" ] && [ "$COLLECT_SYSLOG" -eq 1 ]; then
+            log "Generating cgroup zoom plot (syslog window)..."
+            python3 "$CGROUP_ZOOM_PY" \
+                --with-cgrd    "$DATA_DIR/with_cgrd" \
+                --without-cgrd "$DATA_DIR/without_cgrd" \
+                --out "$REPORT_DIR/cgroup_zoom.png" \
+                && log "Saved: tools/report/$SESSION/cgroup_zoom.png" \
+                || log "WARN: cgroup_zoom_plot.py failed (non-fatal)"
+        fi
+    else
+        log "WARN: no data dirs found, skipping memory plots"
     fi
 fi
 if [ "$COLLECT_SYSLOG" -eq 1 ]; then

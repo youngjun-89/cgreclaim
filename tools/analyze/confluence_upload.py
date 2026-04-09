@@ -307,10 +307,12 @@ def meminfo_phase_stats(rows: list, phase: int) -> dict:
 
 def load_cgroup_rates(data_dir: Path, group: str) -> dict:
     data: dict = {}
+    cols_wanted = ["mem_mb", "pgmajfault_rate", "psi_some_avg10",
+                   "ws_refault_anon_rate", "ws_refault_file_rate", "pgswapin_rate"]
     for f in sorted(data_dir.glob(f"{group}/run_*/cgroup_sampler/*.csv")):
         cg = Path(f).stem
         if cg not in data:
-            data[cg] = {"mem_mb": [], "pgmajfault_rate": [], "psi_some_avg10": []}
+            data[cg] = {c: [] for c in cols_wanted}
         with open(f) as fh:
             for r in csv.DictReader(fh):
                 for col in data[cg]:
@@ -341,6 +343,7 @@ THEAD = ('<table class="wrapped"><tbody>'
 def build_summary_body(session_id: str, has_syslog: bool, has_memory: bool,
                        child_pages: dict, now_str: str) -> str:
     """Parent date page: overview + links to child pages."""
+    import subprocess
     items = ""
     for title, pid in child_pages.items():
         url = f"{CONFLUENCE_BASE}/pages/viewpage.action?pageId={pid}"
@@ -353,11 +356,34 @@ def build_summary_body(session_id: str, has_syslog: bool, has_memory: bool,
         collected.append("🧠 메모리 프로파일링 (meminfo + cgroup)")
     collected_str = ", ".join(collected) if collected else "없음"
 
+    data_dir = DEFAULT_DATA_DIR / session_id
+    runs_w  = len(list(data_dir.glob("with_cgrd/run_*")))
+    runs_wo = len(list(data_dir.glob("without_cgrd/run_*")))
+
+    try:
+        git_hash = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(TOOLS_DIR.parent), text=True).strip()
+    except Exception:
+        git_hash = "unknown"
+
+    # Tool version from cgroup_sampler.py header
+    tools_ver = "unknown"
+    sampler_py = TOOLS_DIR / "cgroup_sampler.py"
+    if sampler_py.exists():
+        for line in sampler_py.read_text().splitlines()[:5]:
+            if "TOOLS_VERSION" in line and "=" in line:
+                tools_ver = line.split("=")[-1].strip().strip("'\"")
+                break
+
     return f"""
 {info_panel("cgreclaim 벤치마크 분석 보고서",
     f"<p><strong>Session:</strong> <code>{session_id}</code><br/>"
     f"<strong>생성:</strong> {now_str}<br/>"
     f"<strong>시나리오:</strong> YouTube → Netflix 앱 전환 (with_cgrd vs without_cgrd)<br/>"
+    f"<strong>실행 횟수:</strong> with_cgrd {runs_w}회 / without_cgrd {runs_wo}회<br/>"
+    f"<strong>Tool 버전:</strong> {tools_ver} | "
+    f"<strong>Commit:</strong> <code>{git_hash}</code><br/>"
     f"<strong>수집 항목:</strong> {collected_str}</p>"
 )}
 <h2>분석 문서 목록</h2>
@@ -461,6 +487,9 @@ def build_meminfo_body(session_id: str, data_dir: Path,
 
     png_block = img_macro("meminfo_comparison.png",
                           "Phase 1 / Phase 2 — MemFree / MemAvail / Swap / Anon 시계열") if has_png else ""
+    zoom_png_block = img_macro("meminfo_zoom.png",
+                               "MemFree / Swap — Netflix 런치 구간 확대") if (
+        (report_dir / "meminfo_zoom.png").exists()) else ""
 
     return f"""
 {info_panel("cgreclaim 메모리 분석 보고서",
@@ -486,6 +515,8 @@ def build_meminfo_body(session_id: str, data_dir: Path,
 <h2>Phase 2 — Netflix 실행 중</h2>
 {THEAD}{p2_rows}</tbody></table>
 {png_block}
+<h2>Netflix 런치 구간 확대 (Zoom)</h2>
+{zoom_png_block}
 <h2>Trade-off 분석</h2>
 <table class="wrapped"><tbody>
   <tr><th>항목 (Phase 2 Δ)</th><th>평가</th><th>설명</th></tr>
@@ -513,7 +544,9 @@ def build_cgroup_body(session_id: str, data_dir: Path, has_png: bool) -> str:
         wmem = w.get("mem_mb", 0); omem = o.get("mem_mb", 0)
         cg_rows.append((cg, wmem, omem, wmem - omem,
                         w.get("pgmajfault_rate", 0), o.get("pgmajfault_rate", 0),
-                        w.get("psi_some_avg10", 0), o.get("psi_some_avg10", 0)))
+                        w.get("psi_some_avg10", 0), o.get("psi_some_avg10", 0),
+                        w.get("ws_refault_anon_rate", 0), o.get("ws_refault_anon_rate", 0),
+                        w.get("ws_refault_file_rate", 0), o.get("ws_refault_file_rate", 0)))
     cg_rows.sort(key=lambda x: abs(x[3]), reverse=True)
 
     top10_html = ""
@@ -525,6 +558,8 @@ def build_cgroup_body(session_id: str, data_dir: Path, has_png: bool) -> str:
                        f'<td>{r[1]:.1f} MB</td><td>{r[2]:.1f} MB</td>'
                        f'<td>{d:+.1f} MB {icon}</td>'
                        f'<td>{r[4]:.3f}</td><td>{r[5]:.3f}</td>'
+                       f'<td>{r[8]:.3f}</td><td>{r[9]:.3f}</td>'
+                       f'<td>{r[10]:.3f}</td><td>{r[11]:.3f}</td>'
                        f'<td>{r[6]:.2f}</td><td>{r[7]:.2f}</td></tr>')
 
     # PSI top-5
@@ -537,6 +572,9 @@ def build_cgroup_body(session_id: str, data_dir: Path, has_png: bool) -> str:
 
     png_block = img_macro("cgroup_comparison.png",
                           "cgroup 메모리 / PSI 비교 — 전체 런 오버레이") if has_png else ""
+    zoom_png_block = img_macro("cgroup_zoom.png",
+                               "cgroup 메모리 — Netflix 런치 구간 확대") if (
+        (DEFAULT_REPORT_DIR / session_id / "cgroup_zoom.png").exists()) else ""
 
     return f"""
 {info_panel("cgreclaim Cgroup 메모리 분석 보고서",
@@ -547,10 +585,14 @@ def build_cgroup_body(session_id: str, data_dir: Path, has_png: bool) -> str:
 <table class="wrapped"><tbody>
   <tr><th>cgroup</th><th>with_cgrd mem</th><th>without_cgrd mem</th><th>Δ mem</th>
       <th>with pgmajfault/s</th><th>without pgmajfault/s</th>
+      <th>with refault_anon/s</th><th>without refault_anon/s</th>
+      <th>with refault_file/s</th><th>without refault_file/s</th>
       <th>with PSI some%</th><th>without PSI some%</th></tr>
   {top10_html}
 </tbody></table>
 {png_block}
+<h2>Netflix 런치 구간 확대 (Zoom)</h2>
+{zoom_png_block}
 <h2>PSI (Memory Pressure) 분석</h2>
 <p>PSI some avg10: 전체 task 중 메모리 부족으로 지연된 비율(%).</p>
 <table class="wrapped"><tbody>
@@ -717,6 +759,9 @@ def main():
                                     mem_title, "")
         if has_meminfo:
             upload_attachment(s, mem_id, session_report_dir / "meminfo_comparison.png")
+        mem_zoom = session_report_dir / "meminfo_zoom.png"
+        if mem_zoom.exists():
+            upload_attachment(s, mem_id, mem_zoom)
         body = build_meminfo_body(session_id, session_data_dir, session_report_dir, has_meminfo)
         update_page_content(s, mem_id, body)
         child_pages[mem_title] = mem_id
@@ -729,6 +774,9 @@ def main():
                                    cg_title, "")
         if has_cgroup:
             upload_attachment(s, cg_id, session_report_dir / "cgroup_comparison.png")
+        cg_zoom = session_report_dir / "cgroup_zoom.png"
+        if cg_zoom.exists():
+            upload_attachment(s, cg_id, cg_zoom)
         body = build_cgroup_body(session_id, session_data_dir, has_cgroup)
         update_page_content(s, cg_id, body)
         child_pages[cg_title] = cg_id

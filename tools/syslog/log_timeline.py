@@ -72,9 +72,12 @@ UPT_RE = re.compile(r'\[(\d+\.\d+)\]')
 METRIC_PAIRS = [
     ('Launch\nrequested',        'PID\nforked',              'req → PID fork'),
     ('PID\nforked',              'IPC\nready',               'PID → IPC ready'),
-    ('Launch\nrequested',        'SAM foreground\nconfirmed','req → SAM foreground'),
-    ('Launch\nrequested',        'SplashState\nIN',          'req → Splash IN'),
-    ('Launch\nrequested',        'SplashState\nOUT ✓',       'req → content ready (Splash OUT)'),
+    ('IPC\nready',               'Sys-splash\nON',           'IPC → Sys-splash ON'),
+    ('Sys-splash\nON',           'Sys-splash\nOFF',          'Sys-splash ON → OFF'),
+    ('Sys-splash\nOFF',          'YouTube\nbackground',      'Sys-splash OFF → YT bg'),
+    ('YouTube\nbackground',      'SplashState\nIN',          'YT bg → Splash IN'),
+    ('SplashState\nIN',          'SplashState\nHOLD',        'Splash IN → HOLD'),
+    ('SplashState\nHOLD',        'SplashState\nOUT ✓',       'Splash HOLD → OUT'),
 ]
 
 
