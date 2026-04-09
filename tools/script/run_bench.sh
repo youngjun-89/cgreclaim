@@ -30,15 +30,24 @@ BOARD_CGRD="/home/root/cgrd"
 CGRD_HEADSTART=20   # seconds to let cgrd warm up before test starts
 RUNS=5
 MODE="both"
-REQUIRED_VERSION=2  # must match TOOLS_VERSION in test.sh / meminfo_sampler.sh
+COLLECT_SYSLOG=0    # set 1 via --syslog to capture /var/log/messages during transition
+TIMING_ONLY=0       # set 1 via --timing-only to skip meminfo+cgroup, syslog timing only
+REQUIRED_VERSION=4  # must match TOOLS_VERSION in test.sh / meminfo_sampler.sh
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TOOLS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_DIR="$(cd "$TOOLS_DIR/.." && pwd)"
 SESSION="$(date '+%Y%m%d_%H%M%S')"
 DATA_DIR="$TOOLS_DIR/data/$SESSION"
 
+# Load .env from repo root if present (credentials, Confluence config)
+if [ -f "$REPO_DIR/.env" ]; then
+    # shellcheck disable=SC1090
+    . "$REPO_DIR/.env"
+fi
+
 REBOOT_INITIAL_WAIT=30   # seconds to wait before starting SSH polling after reboot
-SSH_POLL_INTERVAL=10     # seconds between SSH attempts
+SSH_POLL_INTERVAL=5      # seconds between SSH attempts
 SSH_POLL_TIMEOUT=300     # max seconds to poll SSH after initial wait
 
 SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=15 -o BatchMode=yes -o ServerAliveInterval=10 -o ServerAliveCountMax=3"
@@ -57,11 +66,14 @@ Usage: $(basename "$0") [OPTIONS]
   -u, --user  USER      SSH login user   (default: $BOARD_USER)
   -n, --runs  N         Runs per group   (default: $RUNS)
   -m, --mode  MODE      with_cgrd | without_cgrd | both (default: $MODE)
+  -s, --syslog          Collect /var/log/messages during YouTube→Netflix transition
+  -t, --timing-only     Skip meminfo+cgroup, collect syslog timing only (implies --syslog)
   -h, --help            Show this help
 
 Examples:
   $(basename "$0")                        # both groups, 5 runs each
   $(basename "$0") -n 3 -m with_cgrd      # 3 runs, cgrd group only
+  $(basename "$0") -n 3 -s -t             # 3 runs, timing only (fast)
   $(basename "$0") -b 192.168.0.200 -n 1  # custom board IP, 1 run each
 EOF
     exit 0
@@ -71,11 +83,13 @@ EOF
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        -b|--board) BOARD_IP="$2";   shift 2 ;;
-        -u|--user)  BOARD_USER="$2"; shift 2 ;;
-        -n|--runs)  RUNS="$2";       shift 2 ;;
-        -m|--mode)  MODE="$2";       shift 2 ;;
-        -h|--help)  usage ;;
+        -b|--board)  BOARD_IP="$2";   shift 2 ;;
+        -u|--user)   BOARD_USER="$2"; shift 2 ;;
+        -n|--runs)   RUNS="$2";       shift 2 ;;
+        -m|--mode)   MODE="$2";       shift 2 ;;
+        -s|--syslog)      COLLECT_SYSLOG=1; shift ;;
+        -t|--timing-only) TIMING_ONLY=1; COLLECT_SYSLOG=1; shift ;;
+        -h|--help)   usage ;;
         *) die "Unknown option: $1" ;;
     esac
 done
@@ -125,15 +139,27 @@ wait_after_reboot() {
 deploy_tools() {
     log "Deploying tools v$REQUIRED_VERSION to board..."
     # shellcheck disable=SC2086
-    ssh_cmd "mkdir -p '$BOARD_PROFILE_DIR/script' '$BOARD_PROFILE_DIR/log/meminfo_sampler' '$BOARD_PROFILE_DIR/log/cgroup_sampler'"
-    scp $SSH_OPTS \
-        "$TOOLS_DIR/meminfo_sampler.sh" \
-        "$TOOLS_DIR/cgroup_sampler.py" \
-        "$BOARD:$BOARD_PROFILE_DIR/" || die "Failed to deploy tools to board"
+    ssh_cmd "mkdir -p '$BOARD_PROFILE_DIR/script' '$BOARD_PROFILE_DIR/syslog' \
+        '$BOARD_PROFILE_DIR/log/meminfo_sampler' '$BOARD_PROFILE_DIR/log/cgroup_sampler' \
+        '$BOARD_PROFILE_DIR/log/syslog'"
+    if [ "$TIMING_ONLY" -eq 0 ]; then
+        scp $SSH_OPTS \
+            "$TOOLS_DIR/meminfo_sampler.sh" \
+            "$TOOLS_DIR/cgroup_sampler.py" \
+            "$BOARD:$BOARD_PROFILE_DIR/" || die "Failed to deploy tools to board"
+    fi
     scp $SSH_OPTS \
         "$TOOLS_DIR/script/test.sh" \
         "$BOARD:$BOARD_PROFILE_DIR/script/" || die "Failed to deploy test.sh to board"
-    ssh_cmd "chmod +x '$BOARD_PROFILE_DIR/meminfo_sampler.sh' '$BOARD_PROFILE_DIR/script/test.sh'"
+    scp $SSH_OPTS \
+        "$TOOLS_DIR/syslog/syslog_collector.sh" \
+        "$BOARD:$BOARD_PROFILE_DIR/syslog/" || die "Failed to deploy syslog_collector.sh to board"
+    ssh_cmd "chmod +x \
+        '$BOARD_PROFILE_DIR/script/test.sh' \
+        '$BOARD_PROFILE_DIR/syslog/syslog_collector.sh'"
+    if [ "$TIMING_ONLY" -eq 0 ]; then
+        ssh_cmd "chmod +x '$BOARD_PROFILE_DIR/meminfo_sampler.sh'"
+    fi
     log "Deployed."
 }
 
@@ -150,20 +176,25 @@ verify_version() {
 check_local_prereqs() {
     command -v ssh  >/dev/null 2>&1 || die "ssh not found"
     command -v scp  >/dev/null 2>&1 || die "scp not found"
-    for f in "$TOOLS_DIR/meminfo_sampler.sh" "$TOOLS_DIR/cgroup_sampler.py" "$TOOLS_DIR/script/test.sh"; do
-        [ -f "$f" ] || die "Local file not found: $f"
-    done
+    [ -f "$TOOLS_DIR/script/test.sh" ] || die "Local file not found: $TOOLS_DIR/script/test.sh"
+    if [ "$TIMING_ONLY" -eq 0 ]; then
+        for f in "$TOOLS_DIR/meminfo_sampler.sh" "$TOOLS_DIR/cgroup_sampler.py"; do
+            [ -f "$f" ] || die "Local file not found: $f"
+        done
+    fi
 }
 
 check_board_prereqs() {
     GROUP="$1"
     log "Checking board prerequisites..."
-    ssh_cmd "test -x '$BOARD_PROFILE_DIR/meminfo_sampler.sh'" \
-        || die "Board: meminfo_sampler.sh not found/executable — run deploy_tools"
     ssh_cmd "test -x '$BOARD_PROFILE_DIR/script/test.sh'" \
         || die "Board: test.sh not found/executable"
-    ssh_cmd "command -v python3 >/dev/null 2>&1" \
-        || die "Board: python3 not found"
+    if [ "$TIMING_ONLY" -eq 0 ]; then
+        ssh_cmd "test -x '$BOARD_PROFILE_DIR/meminfo_sampler.sh'" \
+            || die "Board: meminfo_sampler.sh not found/executable — run deploy_tools"
+        ssh_cmd "command -v python3 >/dev/null 2>&1" \
+            || die "Board: python3 not found"
+    fi
     if [ "$GROUP" = "with_cgrd" ]; then
         ssh_cmd "test -x '$BOARD_CGRD'" \
             || die "Board: $BOARD_CGRD not found or not executable"
@@ -177,27 +208,43 @@ collect_logs() {
     GROUP="$1"
     RUN="$2"
     DEST="$DATA_DIR/$GROUP/run_$RUN"
-    mkdir -p "$DEST/meminfo" "$DEST/cgroup"
+    if [ "$TIMING_ONLY" -eq 0 ]; then
+        mkdir -p "$DEST/meminfo" "$DEST/cgroup"
+    else
+        mkdir -p "$DEST"
+    fi
 
     log "Collecting logs → $DEST"
 
     # Debug: show what's on board before collecting
     ssh_cmd "ls -la '$BOARD_PROFILE_DIR/log/' 2>/dev/null || echo '(log dir missing)'"
 
-    if ssh_cmd "test -d '$BOARD_PROFILE_DIR/log/meminfo_sampler'"; then
-        scp_from_board "$BOARD_PROFILE_DIR/log/meminfo_sampler" "$DEST/" \
-            && log "meminfo logs collected." \
-            || log "WARN: meminfo scp failed"
-    else
-        log "WARN: meminfo log dir not found on board"
+    if [ "$TIMING_ONLY" -eq 0 ]; then
+        if ssh_cmd "test -d '$BOARD_PROFILE_DIR/log/meminfo_sampler'"; then
+            scp_from_board "$BOARD_PROFILE_DIR/log/meminfo_sampler" "$DEST/" \
+                && log "meminfo logs collected." \
+                || log "WARN: meminfo scp failed"
+        else
+            log "WARN: meminfo log dir not found on board"
+        fi
+
+        if ssh_cmd "test -d '$BOARD_PROFILE_DIR/log/cgroup_sampler'"; then
+            scp_from_board "$BOARD_PROFILE_DIR/log/cgroup_sampler" "$DEST/" \
+                && log "cgroup logs collected." \
+                || log "WARN: cgroup scp failed"
+        else
+            log "WARN: cgroup log dir not found on board"
+        fi
     fi
 
-    if ssh_cmd "test -d '$BOARD_PROFILE_DIR/log/cgroup_sampler'"; then
-        scp_from_board "$BOARD_PROFILE_DIR/log/cgroup_sampler" "$DEST/" \
-            && log "cgroup logs collected." \
-            || log "WARN: cgroup scp failed"
-    else
-        log "WARN: cgroup log dir not found on board"
+    if [ "$COLLECT_SYSLOG" -eq 1 ]; then
+        if ssh_cmd "test -d '$BOARD_PROFILE_DIR/log/syslog'"; then
+            scp_from_board "$BOARD_PROFILE_DIR/log/syslog" "$DEST/" \
+                && log "syslog collected." \
+                || log "WARN: syslog scp failed"
+        else
+            log "WARN: syslog log dir not found on board"
+        fi
     fi
 
     scp_from_board "/tmp/test_run.log" "$DEST/test_run.log" \
@@ -226,10 +273,17 @@ do_run() {
         log "Starting cgrd ($CGRD_HEADSTART s head start)..."
         ssh_cmd "nohup $BOARD_CGRD >'/tmp/cgrd.log' 2>&1 &"
         sleep "$CGRD_HEADSTART"
+    else
+        log "without_cgrd: waiting $CGRD_HEADSTART s (symmetric stabilization)..."
+        sleep "$CGRD_HEADSTART"
     fi
 
     log "Running test.sh -c on board..."
-    ssh_cmd "cd '$BOARD_PROFILE_DIR' && sh script/test.sh -c >/tmp/test_run.log 2>&1"
+    TEST_FLAGS=""
+    [ "$TIMING_ONLY" -eq 0 ] && TEST_FLAGS="-c"
+    [ "$COLLECT_SYSLOG" -eq 1 ] && TEST_FLAGS="$TEST_FLAGS -s"
+    [ "$TIMING_ONLY" -eq 1 ]   && TEST_FLAGS="$TEST_FLAGS -t"
+    ssh_cmd "cd '$BOARD_PROFILE_DIR' && sh script/test.sh $TEST_FLAGS >/tmp/test_run.log 2>&1"
     log "test.sh completed."
 
     collect_logs "$GROUP" "$RUN"
@@ -290,3 +344,79 @@ log "All done."
 log "Results in $DATA_DIR/"
 log "  with_cgrd/:    $DATA_DIR/with_cgrd/"
 log "  without_cgrd/: $DATA_DIR/without_cgrd/"
+
+# ── auto-generate memory/cgroup plots if profiling was collected ──────────────
+if [ "$TIMING_ONLY" -eq 0 ]; then
+    MEMINFO_PY="$TOOLS_DIR/meminfo_plot.py"
+    CGROUP_PY="$TOOLS_DIR/cgroup_plot.py"
+    REPORT_DIR="$TOOLS_DIR/report/$SESSION"
+    mkdir -p "$REPORT_DIR"
+
+    if [ -f "$MEMINFO_PY" ] && command -v python3 >/dev/null 2>&1; then
+        log "Generating meminfo comparison plot..."
+        # Collect all phase2 meminfo CSVs from both groups
+        MEMINFO_FILES=""
+        for group in with_cgrd without_cgrd; do
+            for csv in "$DATA_DIR/$group"/run_*/meminfo_sampler/*.csv; do
+                [ -f "$csv" ] && MEMINFO_FILES="$MEMINFO_FILES $csv"
+            done
+        done
+        if [ -n "$MEMINFO_FILES" ]; then
+            python3 "$MEMINFO_PY" $MEMINFO_FILES --out "$REPORT_DIR/meminfo_comparison.png" \
+                && log "Saved: tools/report/$SESSION/meminfo_comparison.png" \
+                || log "WARN: meminfo_plot.py failed (non-fatal)"
+        else
+            log "WARN: no meminfo CSV files found"
+        fi
+    fi
+
+    if [ -f "$CGROUP_PY" ] && command -v python3 >/dev/null 2>&1; then
+        log "Generating cgroup comparison plot..."
+        CGROUP_FILES=""
+        for group in with_cgrd without_cgrd; do
+            for csv in "$DATA_DIR/$group"/run_*/cgroup_sampler/*.csv; do
+                [ -f "$csv" ] && CGROUP_FILES="$CGROUP_FILES $csv"
+            done
+        done
+        if [ -n "$CGROUP_FILES" ]; then
+            python3 "$CGROUP_PY" --merge $CGROUP_FILES --out "$REPORT_DIR/cgroup_comparison.png" \
+                && log "Saved: tools/report/$SESSION/cgroup_comparison.png" \
+                || log "WARN: cgroup_plot.py failed (non-fatal)"
+        else
+            log "WARN: no cgroup CSV files found"
+        fi
+    fi
+fi
+if [ "$COLLECT_SYSLOG" -eq 1 ]; then
+    TIMELINE_PY="$TOOLS_DIR/syslog/log_timeline.py"
+    if [ -f "$TIMELINE_PY" ] && command -v python3 >/dev/null 2>&1; then
+        log "Generating syslog timeline comparison..."
+        python3 "$TIMELINE_PY" --session "$SESSION" \
+            && log "Timeline PNG saved to tools/report/$SESSION/timeline_comparison.png" \
+            || log "WARN: log_timeline.py --session failed (non-fatal)"
+
+        log "Generating syslog stats comparison..."
+        python3 "$TIMELINE_PY" --session "$SESSION" --stats \
+            && log "Stats PNG + report saved to tools/report/$SESSION/" \
+            || log "WARN: log_timeline.py --stats failed (non-fatal)"
+    fi
+fi
+
+# ── auto-upload to Confluence if credentials are set ─────────────────────────
+CONFLUENCE_PY="$TOOLS_DIR/analyze/confluence_upload.py"
+if [ -f "$CONFLUENCE_PY" ] && command -v python3 >/dev/null 2>&1 \
+   && [ -n "$CONFLUENCE_USER" ] && [ -n "$CONFLUENCE_PASS" ]; then
+    log "Uploading analysis to Confluence..."
+    CONF_PARENT="${CONFLUENCE_PARENT_PAGE_ID:-3614431987}"
+    python3 "$CONFLUENCE_PY" \
+        --user "$CONFLUENCE_USER" \
+        --password "$CONFLUENCE_PASS" \
+        --session "$SESSION" \
+        --parent-page-id "$CONF_PARENT" \
+        --report-dir "$TOOLS_DIR/report" \
+        --data-dir "$DATA_DIR" \
+        && log "Confluence page created." \
+        || log "WARN: Confluence upload failed (non-fatal)"
+else
+    log "Skipping Confluence upload (set CONFLUENCE_USER / CONFLUENCE_PASS to enable)"
+fi

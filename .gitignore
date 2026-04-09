@@ -16,3 +16,4 @@ test/test_cgreclaim
 tools/log/
 tools/data/
 tools/meminfo_samples_*.csv
+.env

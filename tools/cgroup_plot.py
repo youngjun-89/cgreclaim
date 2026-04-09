@@ -11,7 +11,9 @@ Modes:
 Panels (5 rows):
   1. Memory usage (mem_mb)
   2. Swap usage (swap_mb)
-  3. pgmajfault rate (/s)  — page faults from disk/swap → app switching latency
+  3. Major fault rate (/s) split by type:
+       anon majfault/s = pgswapin_rate         (swap-in, anon pages from disk)
+       file majfault/s = pgmajfault_rate - pgswapin_rate  (file-backed pages from disk)
   4. Workingset refault rate (/s)  — anon + file thrashing
   5. PSI avg10 (some / full)       — memory pressure stall %
 
@@ -50,6 +52,7 @@ COLORS = [
 # CSV columns:
 # timestamp, mem_mb, swap_mb,
 # pgmajfault, pgmajfault_rate,
+# pgswapin, pgswapin_rate,
 # ws_refault_anon, ws_refault_anon_rate,
 # ws_refault_file, ws_refault_file_rate,
 # psi_some_avg10, psi_full_avg10
@@ -58,6 +61,7 @@ def load_csv(path: Path) -> dict:
     ts = []
     mem_mb = []; swap_mb = []
     pgmaj_rate = []
+    pgswapin_rate = []
     ws_anon_rate = []; ws_file_rate = []
     psi_some = []; psi_full = []
 
@@ -67,6 +71,7 @@ def load_csv(path: Path) -> dict:
             if not line or line.startswith("timestamp"):
                 continue
             p = line.split(",")
+            # Support both old (11-col) and new (13-col) format
             if len(p) < 11:
                 continue
             try:
@@ -75,14 +80,26 @@ def load_csv(path: Path) -> dict:
                 swap_mb.append(float(p[2]))
                 # p[3] = pgmajfault cumulative, p[4] = rate
                 pgmaj_rate.append(float(p[4]))
-                # p[5] = ws_refault_anon, p[6] = rate
-                ws_anon_rate.append(float(p[6]))
-                # p[7] = ws_refault_file, p[8] = rate
-                ws_file_rate.append(float(p[8]))
-                psi_some.append(float(p[9]))
-                psi_full.append(float(p[10]))
+                if len(p) >= 13:
+                    # new format: p[5]=pgswapin, p[6]=pgswapin_rate
+                    pgswapin_rate.append(float(p[6]))
+                    ws_anon_rate.append(float(p[8]))
+                    ws_file_rate.append(float(p[10]))
+                    psi_some.append(float(p[11]))
+                    psi_full.append(float(p[12]))
+                else:
+                    # old format without pgswapin
+                    pgswapin_rate.append(0.0)
+                    ws_anon_rate.append(float(p[6]))
+                    ws_file_rate.append(float(p[8]))
+                    psi_some.append(float(p[9]))
+                    psi_full.append(float(p[10]))
             except (ValueError, IndexError):
                 continue
+
+    # file majfault/s = pgmajfault_rate - pgswapin_rate (clamped ≥ 0)
+    majfault_anon_rate = pgswapin_rate
+    majfault_file_rate = [max(0.0, m - s) for m, s in zip(pgmaj_rate, pgswapin_rate)]
 
     n = len(ts)
     dur = (ts[-1] - ts[0]).total_seconds() if n > 1 else 0
@@ -90,6 +107,8 @@ def load_csv(path: Path) -> dict:
         ts=ts, n=n, dur=dur,
         mem_mb=mem_mb, swap_mb=swap_mb,
         pgmaj_rate=pgmaj_rate,
+        majfault_anon_rate=majfault_anon_rate,
+        majfault_file_rate=majfault_file_rate,
         ws_anon_rate=ws_anon_rate, ws_file_rate=ws_file_rate,
         psi_some=psi_some, psi_full=psi_full,
     )
@@ -118,8 +137,13 @@ def finalize_xaxis(ax):
     ax.tick_params(axis="x", colors="lightgray", labelsize=7)
 
 
-def add_legend(ax):
-    ax.legend(facecolor="#2A2A3E", labelcolor="white", framealpha=0.8,
+def add_legend(ax, max_items: int = 20):
+    handles, labels = ax.get_legend_handles_labels()
+    if len(handles) > max_items:
+        handles = handles[:max_items]
+        labels = labels[:max_items]
+        labels[-1] = f"… ({len(ax.get_lines())} total)"
+    ax.legend(handles, labels, facecolor="#2A2A3E", labelcolor="white", framealpha=0.8,
               fontsize=7, loc="upper right")
 
 
@@ -133,7 +157,7 @@ def plot_merged(datasets: list[tuple[str, dict]]):
 
     gs = GridSpec(nrows, 1, figure=fig, hspace=0.08)
     axes = [fig.add_subplot(gs[i]) for i in range(nrows)]
-    labels = ["Mem (MB)", "Swap (MB)", "MajFault/s", "WS Refault/s", "PSI avg10 (%)"]
+    labels = ["Mem (MB)", "Swap (MB)", "MajFault/s (anon=swap / file=disk)", "WS Refault/s", "PSI avg10 (%)"]
     for i, (ax, lbl) in enumerate(zip(axes, labels)):
         style_ax(ax, lbl, hide_xlabel=(i < nrows - 1))
     finalize_xaxis(axes[-1])
@@ -141,13 +165,14 @@ def plot_merged(datasets: list[tuple[str, dict]]):
     for idx, (name, d) in enumerate(datasets):
         c = COLORS[idx % len(COLORS)]
         ts = d["ts"]
-        axes[0].plot(ts, d["mem_mb"],      lw=1.5, color=c, label=name)
-        axes[1].plot(ts, d["swap_mb"],     lw=1.5, color=c, label=name)
-        axes[2].plot(ts, d["pgmaj_rate"],  lw=1.5, color=c, label=name)
+        axes[0].plot(ts, d["mem_mb"],              lw=1.5, color=c, label=name)
+        axes[1].plot(ts, d["swap_mb"],             lw=1.5, color=c, label=name)
+        axes[2].plot(ts, d["majfault_anon_rate"],  lw=1.5, color=c, label=f"{name} anon(swap-in)")
+        axes[2].plot(ts, d["majfault_file_rate"],  lw=1.0, color=c, linestyle="--", label=f"{name} file(disk)")
         ws_total = [a + b for a, b in zip(d["ws_anon_rate"], d["ws_file_rate"])]
-        axes[3].plot(ts, ws_total,         lw=1.5, color=c, label=f"{name} (anon+file)")
-        axes[4].plot(ts, d["psi_some"],    lw=1.5, color=c, label=f"{name} some")
-        axes[4].plot(ts, d["psi_full"],    lw=1.0, color=c, linestyle="--", label=f"{name} full")
+        axes[3].plot(ts, ws_total,                 lw=1.5, color=c, label=f"{name} (anon+file)")
+        axes[4].plot(ts, d["psi_some"],            lw=1.5, color=c, label=f"{name} some")
+        axes[4].plot(ts, d["psi_full"],            lw=1.0, color=c, linestyle="--", label=f"{name} full")
 
     for ax in axes:
         add_legend(ax)
@@ -156,8 +181,6 @@ def plot_merged(datasets: list[tuple[str, dict]]):
     fig.text(0.01, 0.002, stats, fontsize=7, color="#888", va="bottom")
     fig.autofmt_xdate(rotation=30, ha="right")
     plt.tight_layout(rect=[0, 0.015, 1, 0.985])
-    plt.show()
-
 
 # ── individual view ───────────────────────────────────────────────────────────
 
@@ -170,7 +193,7 @@ def plot_individual(datasets: list[tuple[str, dict]]):
 
     gs = GridSpec(nrows, ncols, figure=fig, hspace=0.08, wspace=0.25)
 
-    row_labels = ["Mem (MB)", "Swap (MB)", "MajFault/s", "WS Refault/s", "PSI avg10 (%)"]
+    row_labels = ["Mem (MB)", "Swap (MB)", "MajFault/s (anon=swap / file=disk)", "WS Refault/s", "PSI avg10 (%)"]
 
     for col, (name, d) in enumerate(datasets):
         c = COLORS[col % len(COLORS)]
@@ -197,8 +220,10 @@ def plot_individual(datasets: list[tuple[str, dict]]):
         axes_col[1].plot(ts, d["swap_mb"],    lw=1.5, color=c, label="swap")
         axes_col[1].fill_between(ts, d["swap_mb"], alpha=0.10, color=c)
 
-        axes_col[2].plot(ts, d["pgmaj_rate"], lw=1.5, color=c, label="majfault/s")
-        axes_col[2].fill_between(ts, d["pgmaj_rate"], alpha=0.10, color=c)
+        axes_col[2].plot(ts, d["majfault_anon_rate"], lw=1.5, color=c,  label="anon majfault/s (swap-in)")
+        axes_col[2].plot(ts, d["majfault_file_rate"], lw=1.5, color=c2, label="file majfault/s (disk)", linestyle="--")
+        axes_col[2].fill_between(ts, d["majfault_anon_rate"], alpha=0.10, color=c)
+        axes_col[2].fill_between(ts, d["majfault_file_rate"], alpha=0.10, color=c2)
 
         axes_col[3].plot(ts, d["ws_anon_rate"], lw=1.5, color=c,  label="anon refault/s")
         axes_col[3].plot(ts, d["ws_file_rate"], lw=1.5, color=c2, label="file refault/s", linestyle="--")
@@ -212,7 +237,6 @@ def plot_individual(datasets: list[tuple[str, dict]]):
 
     fig.autofmt_xdate(rotation=30, ha="right")
     plt.tight_layout(rect=[0, 0.01, 1, 0.985])
-    plt.show()
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -226,6 +250,8 @@ def main():
                         help="CSV file(s) produced by cgroup_sampler.py")
     parser.add_argument("--merge", action="store_true",
                         help="Overlay all cgroups on the same axes")
+    parser.add_argument("--out", metavar="FILE",
+                        help="Save figure to FILE instead of displaying")
     args = parser.parse_args()
 
     files = [Path(f) for f in args.csvfiles]
@@ -251,6 +277,15 @@ def main():
         plot_merged(datasets)
     else:
         plot_individual(datasets)
+
+    if args.out:
+        import os
+        os.makedirs(os.path.dirname(args.out) if os.path.dirname(args.out) else ".", exist_ok=True)
+        plt.savefig(args.out, dpi=150, bbox_inches=None)
+        print(f"Saved: {args.out}")
+        plt.close()
+    else:
+        plt.show()
 
 
 if __name__ == "__main__":

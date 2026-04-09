@@ -1,0 +1,6 @@
+Analyzing session: 20260408_224918
+Output: /home/yjay.kim/git/cgreclaim/tools/report/20260408_224918
+Groups found: ['with_cgrd']
+Only ['with_cgrd'] available — skipping comparison plots
+Generating report.md...
+Done: /home/yjay.kim/git/cgreclaim/tools/report/20260408_224918/report.md

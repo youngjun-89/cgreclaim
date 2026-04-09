@@ -126,7 +126,21 @@ def plot_file(data: dict, axes: list, sfx: str, ci: int):
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    files = [Path(a) for a in sys.argv[1:]]
+    skip_next = False
+    files = []
+    for a in sys.argv[1:]:
+        if skip_next:
+            skip_next = False
+            continue
+        if a == "--out":
+            skip_next = True
+            continue
+        if not a.startswith("--"):
+            files.append(Path(a))
+    out_path = None
+    for i, a in enumerate(sys.argv[1:]):
+        if a == "--out" and i + 2 < len(sys.argv):
+            out_path = sys.argv[i + 2]
     if not files:
         print(__doc__)
         sys.exit(1)
@@ -179,7 +193,14 @@ def main():
         fig.text(0.01, 0.002, "  |  ".join(stats), fontsize=8, color="#888", va="bottom")
 
     plt.tight_layout(rect=[0, 0.015, 1, 0.985])
-    plt.show()
+    if out_path:
+        import os
+        os.makedirs(os.path.dirname(out_path) if os.path.dirname(out_path) else ".", exist_ok=True)
+        fig.savefig(out_path, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
+        print(f"Saved: {out_path}")
+        plt.close(fig)
+    else:
+        plt.show()
 
 
 if __name__ == "__main__":
