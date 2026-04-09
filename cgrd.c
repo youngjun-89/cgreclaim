@@ -6,8 +6,10 @@
  * and waits for SIGTERM/SIGINT to shut down cleanly.
  *
  * Usage:
- *   cgrd [scan_root]
+ *   cgrd [--no-log] [scan_root]
  *
+ *   --no-log   — disable all file logging (intended for benchmark runs
+ *                where log I/O must not perturb memory measurements)
  *   scan_root  — cgroup v2 directory to watch (default: /sys/fs/cgroup)
  */
 
@@ -28,46 +30,63 @@ static void on_signal(int sig)
 	g_stop = 1;
 }
 
+/* Convenience: emit via cgr_log_file only when logging is enabled. */
+#define cgrd_log(no_log, lvl, fmt, ...) \
+	do { if (!(no_log)) cgr_log_file((lvl), (fmt), ##__VA_ARGS__); } while (0)
+
 int main(int argc, char *argv[])
 {
-	const char *scan_root = (argc > 1) ? argv[1] : "/sys/fs/cgroup";
+	int no_log = 0;
+	const char *scan_root = "/sys/fs/cgroup";
+	int i;
 
-	/* Open log file before doing anything else so early errors are captured. */
-	cgr_log_open();
+	for (i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "--no-log") == 0) {
+			no_log = 1;
+		} else {
+			scan_root = argv[i];
+		}
+	}
+
+	if (!no_log)
+		cgr_log_open();
 
 	struct cgr_config cfg = {
 		.poll_interval_ms = 1000,
 		.scan_root        = scan_root,
-		.log_fn           = cgr_log_file,
+		.log_fn           = no_log ? NULL : cgr_log_file,
 	};
 
-	cgr_log_file(CGR_LOG_INFO, "cgrd starting (scan_root=%s, RAM=%llu MB)",
-		     scan_root,
-		     (unsigned long long)(cgr_get_total_ram() >> 20));
+	cgrd_log(no_log, CGR_LOG_INFO, "cgrd starting (scan_root=%s, RAM=%llu MB)",
+		 scan_root,
+		 (unsigned long long)(cgr_get_total_ram() >> 20));
 
 	struct cgr_ctx *ctx = cgr_init(&cfg);
 	if (!ctx) {
-		cgr_log_file(CGR_LOG_ERR, "cgr_init failed");
-		cgr_log_close();
+		cgrd_log(no_log, CGR_LOG_ERR, "cgr_init failed");
+		if (!no_log)
+			cgr_log_close();
 		return EXIT_FAILURE;
 	}
 
 	int found = cgr_scan_cgroups(ctx);
 	if (found < 0) {
-		cgr_log_file(CGR_LOG_WARN, "cgr_scan_cgroups error (%d), continuing anyway", found);
+		cgrd_log(no_log, CGR_LOG_WARN,
+			 "cgr_scan_cgroups error (%d), continuing anyway", found);
 	} else {
-		cgr_log_file(CGR_LOG_INFO, "found %d cgroup(s)", found);
+		cgrd_log(no_log, CGR_LOG_INFO, "found %d cgroup(s)", found);
 	}
 
 	int rc = cgr_start(ctx);
 	if (rc != CGR_OK) {
-		cgr_log_file(CGR_LOG_ERR, "cgr_start failed (%d)", rc);
+		cgrd_log(no_log, CGR_LOG_ERR, "cgr_start failed (%d)", rc);
 		cgr_destroy(ctx);
-		cgr_log_close();
+		if (!no_log)
+			cgr_log_close();
 		return EXIT_FAILURE;
 	}
 
-	cgr_log_file(CGR_LOG_INFO, "monitor running — waiting for SIGTERM/SIGINT");
+	cgrd_log(no_log, CGR_LOG_INFO, "monitor running — waiting for SIGTERM/SIGINT");
 
 	signal(SIGTERM, on_signal);
 	signal(SIGINT,  on_signal);
@@ -75,10 +94,11 @@ int main(int argc, char *argv[])
 	while (!g_stop)
 		sleep(1);
 
-	cgr_log_file(CGR_LOG_INFO, "cgrd stopping");
+	cgrd_log(no_log, CGR_LOG_INFO, "cgrd stopping");
 	cgr_stop(ctx);
 	cgr_destroy(ctx);
-	cgr_log_close();
+	if (!no_log)
+		cgr_log_close();
 
 	return EXIT_SUCCESS;
 }
