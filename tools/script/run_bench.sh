@@ -249,13 +249,10 @@ collect_logs() {
 
     scp_from_board "/tmp/test_run.log" "$DEST/test_run.log" \
         || log "WARN: test_run.log not collected"
-    if [ "$GROUP" = "with_cgrd" ]; then
-        scp_from_board "/tmp/cgrd.log" "$DEST/cgrd.log" \
-            || log "WARN: cgrd.log not collected"
-    fi
+    # cgrd runs with --no-log during benchmarks; no cgrd.log to collect
 
     # Clean board logs after collection
-    ssh_cmd "rm -rf '$BOARD_PROFILE_DIR/log/' /tmp/test_run.log /tmp/cgrd.log"
+    ssh_cmd "rm -rf '$BOARD_PROFILE_DIR/log/' /tmp/test_run.log"
     log "Logs saved to $DEST/ and cleaned from board."
 }
 
@@ -267,11 +264,12 @@ do_run() {
     log "--- $GROUP run $RUN/$RUNS ---"
 
     # Ensure board log dir is clean before run (safety net if previous collect failed)
-    ssh_cmd "rm -rf '$BOARD_PROFILE_DIR/log/' /tmp/test_run.log /tmp/cgrd.log"
+    ssh_cmd "rm -rf '$BOARD_PROFILE_DIR/log/' /tmp/test_run.log"
 
     if [ "$GROUP" = "with_cgrd" ]; then
         log "Starting cgrd ($CGRD_HEADSTART s head start)..."
-        ssh_cmd "nohup $BOARD_CGRD >'/tmp/cgrd.log' 2>&1 &"
+        # --no-log: suppress log file I/O so cgrd writes don't perturb memory measurements
+        ssh_cmd "nohup $BOARD_CGRD --no-log >'/dev/null' 2>&1 &"
         sleep "$CGRD_HEADSTART"
     else
         log "without_cgrd: waiting $CGRD_HEADSTART s (symmetric stabilization)..."
