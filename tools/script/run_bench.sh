@@ -276,6 +276,18 @@ do_run() {
         sleep "$CGRD_HEADSTART"
     fi
 
+    # Run optional pre-test hook on board (executes AFTER cgrd headstart).
+    # Place /home/root/hook.sh on the board to configure cgroup limits,
+    # memory.high values, or any other per-run setup before test.sh starts.
+    # Example hook.sh:
+    #   echo 262144000 > /sys/fs/cgroup/system.slice/sam.service/memory.high
+    BOARD_HOOK="/home/root/hook.sh"
+    if ssh_cmd "[ -x '$BOARD_HOOK' ]" 2>/dev/null; then
+        log "Running hook.sh on board..."
+        ssh_cmd "sh '$BOARD_HOOK'" && log "hook.sh completed." \
+            || log "WARN: hook.sh exited non-zero (continuing)"
+    fi
+
     log "Running test.sh -c on board..."
     TEST_FLAGS=""
     [ "$TIMING_ONLY" -eq 0 ] && TEST_FLAGS="-c"

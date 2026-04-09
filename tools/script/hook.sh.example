@@ -1,0 +1,23 @@
+#!/bin/sh
+# hook.sh — pre-test hook executed on the board after cgrd headstart,
+#            before test.sh starts.
+#
+# Place this file at /home/root/hook.sh on the board and make it executable:
+#   chmod +x /home/root/hook.sh
+#
+# run_bench.sh will call this automatically if it exists and is executable.
+# It runs for BOTH with_cgrd and without_cgrd groups, so limits set here
+# apply to both (fair comparison baseline).
+#
+# Remove or rename this file on the board to disable the hook.
+#
+# ── Example: pin sam.service memory.high to 250 MB ───────────────────────────
+SAM_CG="/sys/fs/cgroup/system.slice/sam.service"
+SAM_LIMIT_MB=250
+
+if [ -d "$SAM_CG" ]; then
+    echo $((SAM_LIMIT_MB * 1024 * 1024)) > "$SAM_CG/memory.high"
+    printf "[hook] sam.service memory.high set to %d MB\n" "$SAM_LIMIT_MB"
+else
+    printf "[hook] WARN: %s not found, skipping\n" "$SAM_CG"
+fi
