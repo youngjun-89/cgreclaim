@@ -291,8 +291,7 @@ REQUIRED_EVENTS = [
 ]
 
 # IQR-based numeric outlier: flag a value if it deviates from Q1/Q3 by more
-# than IQR_FACTOR * IQR (only applied when n >= 4; with fewer samples we only
-# apply the missing-event check to avoid false positives).
+# than IQR_FACTOR * IQR (only applied when n >= 4).
 IQR_FACTOR = 2.0
 
 
@@ -300,40 +299,40 @@ def filter_outliers(timings: list) -> tuple:
     """
     Return (valid, outliers) where each item is a key_times dict.
 
-    A run is an outlier if:
-      1. Any REQUIRED_EVENTS key is absent (syslog was cut short), OR
-      2. The req→Netflix Fullscreen value is a numeric outlier vs the group
-         (only when n >= 4 samples after step-1 filter).
+    A run is an outlier ONLY if:
+      - n >= 4 AND the req→Netflix Fullscreen value is a numeric IQR outlier.
+
+    Runs with missing events are kept in valid (events that are missing will
+    produce n/a naturally in per-metric extract()), but annotated for logging.
     """
     import numpy as np
 
+    # Annotate runs with missing events but keep them in valid
     valid, outliers = [], []
-
-    # Step 1: event-completeness filter
     for kt in timings:
         missing = [e for e in REQUIRED_EVENTS if kt.get(e) is None]
         if missing:
-            kt['_outlier_reason'] = f"missing events: {missing}"
-            outliers.append(kt)
-        else:
-            valid.append(kt)
+            kt['_missing_events'] = missing
+        valid.append(kt)
 
-    # Step 2: IQR numeric filter on the primary metric (only when n >= 4)
-    if len(valid) >= 4:
-        metric_start, metric_end = REQUIRED_EVENTS[0], REQUIRED_EVENTS[-1]
+    # IQR numeric filter on the primary metric (only when n >= 4)
+    # Only consider runs that have both endpoints for the primary metric
+    metric_start, metric_end = REQUIRED_EVENTS[0], REQUIRED_EVENTS[-1]
+    complete = [kt for kt in valid
+                if kt.get(metric_start) is not None and kt.get(metric_end) is not None]
+    if len(complete) >= 4:
         vals = np.array([metric_delta(kt, metric_start, metric_end)
-                         for kt in valid], dtype=float)
+                         for kt in complete], dtype=float)
         q1, q3 = np.percentile(vals, 25), np.percentile(vals, 75)
         iqr = q3 - q1
         lo, hi = q1 - IQR_FACTOR * iqr, q3 + IQR_FACTOR * iqr
-        next_valid = []
-        for kt, v in zip(valid, vals):
+        iqr_outlier_ids = set()
+        for kt, v in zip(complete, vals):
             if v < lo or v > hi:
                 kt['_outlier_reason'] = f"IQR outlier: {v:.3f}s outside [{lo:.3f}, {hi:.3f}]"
-                outliers.append(kt)
-            else:
-                next_valid.append(kt)
-        valid = next_valid
+                iqr_outlier_ids.add(id(kt))
+        valid = [kt for kt in valid if id(kt) not in iqr_outlier_ids]
+        outliers = [kt for kt in timings if id(kt) in iqr_outlier_ids]
 
     return valid, outliers
 
@@ -346,6 +345,12 @@ def draw_stats(timings_a: list, label_a: str, timings_b: list, label_b: str, out
     valid_a, bad_a = filter_outliers(timings_a)
     valid_b, bad_b = filter_outliers(timings_b)
 
+    for kt in valid_a:
+        if kt.get('_missing_events'):
+            print(f"  [warn] {label_a} {kt.get('_run','?')}: missing events {kt['_missing_events']} (partial data)")
+    for kt in valid_b:
+        if kt.get('_missing_events'):
+            print(f"  [warn] {label_b} {kt.get('_run','?')}: missing events {kt['_missing_events']} (partial data)")
     for kt in bad_a:
         print(f"  [outlier excluded] {label_a} {kt.get('_run','?')}: {kt.get('_outlier_reason','')}")
     for kt in bad_b:
@@ -477,6 +482,14 @@ def write_stats_report(timings_a, label_a, timings_b, label_b, out_path: str):
     for kt in bad_b:
         outlier_lines.append(f"- `{label_b}` **{kt.get('_run','?')}**: {kt.get('_outlier_reason','')}")
 
+    warn_lines = []
+    for kt in valid_a:
+        if kt.get('_missing_events'):
+            warn_lines.append(f"- `{label_a}` **{kt.get('_run','?')}**: missing events {kt['_missing_events']} (partial data included)")
+    for kt in valid_b:
+        if kt.get('_missing_events'):
+            warn_lines.append(f"- `{label_b}` **{kt.get('_run','?')}**: missing events {kt['_missing_events']} (partial data included)")
+
     lines = [
         "# Netflix Launch Timing — Statistical Report",
         "",
@@ -485,9 +498,12 @@ def write_stats_report(timings_a, label_a, timings_b, label_b, out_path: str):
         "",
     ]
 
+    if warn_lines:
+        lines += ["### ⚠️ Partial data (events missing, metrics using available events only)", ""] + warn_lines + [""]
+
     if outlier_lines:
         lines += [
-            "### ⚠️ Outliers excluded from statistics",
+            "### ❌ Outliers excluded from statistics",
             "",
         ] + outlier_lines + [""]
 
