@@ -62,9 +62,6 @@ RULES = [
         'Sys-splash\nON',           '#9b59b6', 2),
     (r'surface-manager.*NL_VSC.*app_id.*com.webos.app.splash.*visible.*false',
         'Sys-splash\nOFF',          '#7f8c8d', 2),
-    # tier 2 — Netflix fullscreen (definitive scenario-end event)
-    (r'surface-manager.*NL_SURFACE_STATE_CHANGE.*FULLSCREEN.*netflix',
-        'Netflix\nFullscreen ✓',    '#00e676', 2),
 ]
 
 TS_RE  = re.compile(r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z')
@@ -78,7 +75,6 @@ METRIC_PAIRS = [
     ('Launch\nrequested',        'SAM foreground\nconfirmed','req → SAM foreground'),
     ('Launch\nrequested',        'SplashState\nIN',          'req → Splash IN'),
     ('Launch\nrequested',        'SplashState\nOUT ✓',       'req → content ready (Splash OUT)'),
-    ('Launch\nrequested',        'Netflix\nFullscreen ✓',    'req → Netflix Fullscreen'),
 ]
 
 
@@ -280,14 +276,15 @@ def collect_run_timings(group_dir: str) -> list:
 
 
 # ── Outlier detection ─────────────────────────────────────────────────────────
-# A run is considered valid only if it has all anchor events captured.
-# Required: Launch requested → Netflix Fullscreen (definitive scenario-end marker).
-# surface-manager NL_SURFACE_STATE_CHANGE FULLSCREEN netflix is the last event
-# that fires when Netflix takes over the screen from YouTube.
+# Required anchor events for a run to be considered complete.
+# SplashState OUT = Netflix content fully visible (splash dismissed) — this is
+# the definitive scenario-end marker, ~10s after Netflix Fullscreen surface switch.
+# Netflix Fullscreen fires earlier (surface switches to netflix) but content is
+# not yet visible; SplashState OUT is the user-visible completion point.
 
 REQUIRED_EVENTS = [
     'Launch requested',
-    'Netflix\nFullscreen ✓',
+    'SplashState\nOUT ✓',
 ]
 
 # IQR-based numeric outlier: flag a value if it deviates from Q1/Q3 by more

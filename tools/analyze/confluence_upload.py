@@ -380,6 +380,49 @@ def build_meminfo_body(session_id: str, data_dir: Path,
     p1w = meminfo_phase_stats(with_rows, 1); p1wo = meminfo_phase_stats(wo_rows, 1)
     p2w = meminfo_phase_stats(with_rows, 2); p2wo = meminfo_phase_stats(wo_rows, 2)
 
+    def summary_panel_title(p2w, p2wo):
+        """Generate data-driven panel title from Phase 2 (Netflix) deltas."""
+        parts = []
+        for m in ["MemFree", "MemAvailable", "SwapUsed"]:
+            if m in p2w and m in p2wo:
+                d = p2w[m]["mean"] - p2wo[m]["mean"]
+                if m == "MemFree":
+                    parts.append(f"MemFree {d:+.0f}MB")
+                elif m == "SwapUsed":
+                    parts.append(f"Swap {d:+.0f}MB")
+        return "핵심 결론 (Phase 2 Netflix): " + " | ".join(parts) if parts else "핵심 결론"
+
+    def tradeoff_rows(p1w, p1wo, p2w, p2wo):
+        """Generate data-driven trade-off rows from actual deltas."""
+        rows = []
+        # Check each metric across phases (use Phase 2 Netflix as primary)
+        checks = [
+            ("MemFree",      True,   "MemFree",      "앱 전환 시 가용 메모리"),
+            ("MemAvailable", True,   "MemAvailable", "실제 할당 가능 메모리"),
+            ("SwapUsed",     False,  "Swap 사용량",  "reclaim된 페이지가 swap으로 이동 (swap I/O 비용 증가)"),
+            ("ActiveAnon",   False,  "Active Anon",  "활성 익명 메모리 (앱 실행 중 사용)"),
+            ("InactiveAnon", False,  "Inactive Anon","비활성 익명 메모리 (cgrd reclaim 대상)"),
+        ]
+        for key, higher_is_better, label, desc in checks:
+            w2 = p2w.get(key, {})
+            wo2 = p2wo.get(key, {})
+            if not w2 or not wo2:
+                continue
+            d = w2["mean"] - wo2["mean"]
+            # Positive delta = with_cgrd has more of this metric
+            improved = d > 1 if higher_is_better else d < -1
+            worsened = (d < -5 if higher_is_better else d > 5)
+            if improved:
+                icon, eval_str = "✅", "긍정적"
+            elif worsened:
+                icon, eval_str = "🔴", "부정적"
+            else:
+                icon, eval_str = "⚠️", "중립/주의"
+            rows.append(f'<tr><td>{label} ({d:+.0f} MB)</td><td>{icon} {eval_str}</td><td>{desc}</td></tr>')
+        # Note about pgmajfault/PSI — sourced from cgroup page
+        rows.append('<tr><td>pgmajfault / PSI</td><td>→ Cgroup 분석 페이지 참조</td><td>cgroup별 major fault rate 및 pressure 지표</td></tr>')
+        return "\n  ".join(rows)
+
     def summary_rows():
         html = ""
         for lbl, pw, pwo in [("Phase 1 (YouTube)", p1w, p1wo),
@@ -427,7 +470,7 @@ def build_meminfo_body(session_id: str, data_dir: Path,
 )}
 <h2>Executive Summary</h2>
 <ac:structured-macro ac:name="panel" ac:schema-version="1">
-  <ac:parameter ac:name="title">핵심 결론: cgrd가 Free Memory를 더 확보하지만 Swap/PSI 증가</ac:parameter>
+  <ac:parameter ac:name="title">{summary_panel_title(p2w, p2wo)}</ac:parameter>
   <ac:rich-text-body>
     <table class="wrapped"><tbody>
       <tr><th>Phase</th><th>Metric</th><th>with_cgrd</th>
@@ -445,12 +488,8 @@ def build_meminfo_body(session_id: str, data_dir: Path,
 {png_block}
 <h2>Trade-off 분석</h2>
 <table class="wrapped"><tbody>
-  <tr><th>항목</th><th>평가</th><th>설명</th></tr>
-  <tr><td>MemFree 증가</td><td>✅ 긍정적</td><td>앱 전환 시 OOM 리스크 감소</td></tr>
-  <tr><td>Anon 메모리 감소</td><td>✅ 긍정적</td><td>cgrd가 비활성 페이지를 효과적으로 회수</td></tr>
-  <tr><td>Swap 사용량 증가</td><td>⚠️ 주의</td><td>reclaim된 페이지가 swap으로 이동</td></tr>
-  <tr><td>pgmajfault 급증</td><td>🔴 부정적</td><td>swap에서 다시 불러오는 I/O 비용 발생</td></tr>
-  <tr><td>PSI pressure 증가</td><td>⚠️ 주의</td><td>메모리 압박이 실사용 체감 성능에 영향 가능</td></tr>
+  <tr><th>항목 (Phase 2 Δ)</th><th>평가</th><th>설명</th></tr>
+  {tradeoff_rows(p1w, p1wo, p2w, p2wo)}
 </tbody></table>
 {data_path_macro(session_id)}
 """
