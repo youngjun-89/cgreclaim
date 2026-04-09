@@ -354,36 +354,29 @@ if [ "$TIMING_ONLY" -eq 0 ]; then
 
     if [ -f "$MEMINFO_PY" ] && command -v python3 >/dev/null 2>&1; then
         log "Generating meminfo comparison plot..."
-        # Collect all phase2 meminfo CSVs from both groups
-        MEMINFO_FILES=""
-        for group in with_cgrd without_cgrd; do
-            for csv in "$DATA_DIR/$group"/run_*/meminfo_sampler/*.csv; do
-                [ -f "$csv" ] && MEMINFO_FILES="$MEMINFO_FILES $csv"
-            done
-        done
-        if [ -n "$MEMINFO_FILES" ]; then
-            python3 "$MEMINFO_PY" $MEMINFO_FILES --out "$REPORT_DIR/meminfo_comparison.png" \
+        if [ -d "$DATA_DIR/with_cgrd" ] && [ -d "$DATA_DIR/without_cgrd" ]; then
+            python3 "$MEMINFO_PY" \
+                --with-cgrd    "$DATA_DIR/with_cgrd" \
+                --without-cgrd "$DATA_DIR/without_cgrd" \
+                --out "$REPORT_DIR/meminfo_comparison.png" \
                 && log "Saved: tools/report/$SESSION/meminfo_comparison.png" \
                 || log "WARN: meminfo_plot.py failed (non-fatal)"
         else
-            log "WARN: no meminfo CSV files found"
+            log "WARN: no meminfo data dirs found"
         fi
     fi
 
     if [ -f "$CGROUP_PY" ] && command -v python3 >/dev/null 2>&1; then
         log "Generating cgroup comparison plot..."
-        CGROUP_FILES=""
-        for group in with_cgrd without_cgrd; do
-            for csv in "$DATA_DIR/$group"/run_*/cgroup_sampler/*.csv; do
-                [ -f "$csv" ] && CGROUP_FILES="$CGROUP_FILES $csv"
-            done
-        done
-        if [ -n "$CGROUP_FILES" ]; then
-            python3 "$CGROUP_PY" --merge $CGROUP_FILES --out "$REPORT_DIR/cgroup_comparison.png" \
+        if [ -d "$DATA_DIR/with_cgrd" ] && [ -d "$DATA_DIR/without_cgrd" ]; then
+            python3 "$CGROUP_PY" \
+                --with-cgrd    "$DATA_DIR/with_cgrd" \
+                --without-cgrd "$DATA_DIR/without_cgrd" \
+                --out "$REPORT_DIR/cgroup_comparison.png" \
                 && log "Saved: tools/report/$SESSION/cgroup_comparison.png" \
                 || log "WARN: cgroup_plot.py failed (non-fatal)"
         else
-            log "WARN: no cgroup CSV files found"
+            log "WARN: no cgroup data dirs found"
         fi
     fi
 fi
